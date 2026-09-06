@@ -29,6 +29,8 @@ import {
 } from "@jura/shared/document.js";
 import { today } from "@jura/shared/dates.js";
 import { isSafeId, slugify, newDocumentId, newPaymentId, newSectionId, newItemId } from "@jura/shared/ids.js";
+import { defaultConfig } from "@jura/shared/defaults/config.js";
+import { seedTemplates } from "@jura/shared/defaults/templates.js";
 
 export class StoreError extends Error {
   constructor(message, status = 400, details = null) {
@@ -650,12 +652,40 @@ export async function findByNumber(number) {
   return readDocument(match.id);
 }
 
+/**
+ * Make sure there is a data tree to work with.
+ *
+ * Called on every boot. Nothing here overwrites anything — an existing
+ * `counters.json` in particular is left strictly alone, because resetting one
+ * hands out invoice numbers that have already been used.
+ *
+ * The config and the templates are created when absent, which matters on a
+ * hosted deployment: the first boot lands on an empty volume with no shell to
+ * run `npm run seed` from, and without a config every request answers 503 with
+ * no way to fix it. The config it writes is the shipped default, whose company
+ * details are placeholders that block issuing until they are filled in — so a
+ * silently-created config cannot produce a document.
+ */
 export async function ensureDataTree() {
   await mkdir(paths.documents, { recursive: true });
   await mkdir(paths.templates, { recursive: true });
   await mkdir(paths.outputs, { recursive: true });
   if (!(await exists(paths.counters))) await writeJsonAtomic(paths.counters, emptyCounters());
   if (!(await exists(paths.clients))) await writeJsonAtomic(paths.clients, []);
+
+  if (!(await exists(paths.config))) {
+    await writeJsonAtomic(paths.config, defaultConfig());
+    console.log(`[jura] no config.json at ${paths.config} - wrote the default.`);
+    console.log("[jura] Company and payment details are placeholders; issuing is blocked until they are set.");
+  }
+
+  const templates = await readdir(paths.templates).catch(() => []);
+  if (templates.filter((f) => f.endsWith(".json")).length === 0) {
+    for (const { slug, ...rest } of seedTemplates) {
+      await writeJsonAtomic(join(paths.templates, `${slug}.json`), { ...rest, updated_at: new Date().toISOString() });
+    }
+    console.log(`[jura] no templates - wrote the ${seedTemplates.length} that ship with the app.`);
+  }
 }
 
 async function exists(path) {

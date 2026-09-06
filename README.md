@@ -185,14 +185,20 @@ spelled out. Railway sets `PORT` itself.
 `VITE_API_URL` is baked into the bundle at build time, so it is public. That is fine — it
 is an address, not a secret. Nothing else about the deployment is in the bundle.
 
-### One thing that is not solved yet
+Full step-by-step, including the domains and the two things that will bite you:
+**[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
-`backend/` still reads and writes JSON files, and **Railway's container filesystem is
-ephemeral — a redeploy wipes it.** Deployed as it stands, the records would not survive.
-Moving the store to Postgres is the subject of
-`prd/pending/prd-jura-invoicing-hosted-2026-09-06.md`; until that is done, the hosted
-backend is only safe against a mounted volume, and the filesystem build on a real machine
-remains the system of record.
+### The two that will bite you
+
+**Railway's disk is wiped on every deploy.** The records are JSON files, so without a
+mounted volume every issued invoice disappears on the next push. Attach one and point
+`JURA_DATA_PATH` inside it. Moving the store to Postgres is
+`prd/pending/prd-jura-invoicing-hosted-2026-09-06.md`.
+
+**The API needs a subdomain of the same domain as the app** — `api.jurasolutions.com`, not
+the `*.up.railway.app` address. The session is a cookie; across different sites it is a
+third-party cookie, which Safari blocks outright. Sign-in would work in Chrome on your
+laptop and fail on your phone.
 
 ---
 
