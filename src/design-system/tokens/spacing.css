@@ -1,0 +1,38 @@
+:root {
+  --space-0: 0;
+  --space-1: 0.25rem;   /* 4  */
+  --space-2: 0.5rem;    /* 8  */
+  --space-3: 0.75rem;   /* 12 */
+  --space-4: 1rem;      /* 16 */
+  --space-5: 1.5rem;    /* 24 */
+  --space-6: 2rem;      /* 32 */
+  --space-7: 2.5rem;    /* 40 */
+  --space-8: 3rem;      /* 48 */
+  --space-9: 4rem;      /* 64 */
+  --space-10: 5rem;     /* 80 */
+  --space-11: 6rem;     /* 96 */
+  --space-12: 8rem;     /* 128 */
+
+  /* Vertical rhythm for marketing sections: tighter on mobile */
+  --section-y: clamp(3.5rem, 2rem + 7vw, 7rem);
+  --section-y-tight: clamp(2.5rem, 1.5rem + 4vw, 4rem);
+
+  /* Layout */
+  --container-max: 1200px;
+  --container-narrow: 780px;
+  --gutter: clamp(1.25rem, 0.75rem + 2vw, 2.5rem);
+
+  /* Radii — moderate; nothing pill-shaped except tags and avatars */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-full: 999px;
+
+  /* Controls */
+  --control-h-sm: 34px;
+  --control-h-md: 42px;
+  --control-h-lg: 50px;
+  --tap-min: 44px;
+}

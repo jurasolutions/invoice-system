@@ -1,0 +1,28 @@
+:root {
+  /* Interaction */
+  --dur-instant: 90ms;
+  --dur-fast: 150ms;
+  --dur-base: 240ms;
+  --dur-slow: 400ms;
+  --dur-enter: 520ms;
+
+  /* Ambient loops for the automation graphics */
+  --dur-loop-short: 2.4s;
+  --dur-loop: 4.8s;
+  --dur-loop-long: 8s;
+
+  --ease-standard: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-linear: linear;
+
+  --hover-lift: translateY(-2px);
+  --press-scale: scale(0.985);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-instant: 1ms; --dur-fast: 1ms; --dur-base: 1ms;
+    --dur-slow: 1ms; --dur-enter: 1ms;
+  }
+}

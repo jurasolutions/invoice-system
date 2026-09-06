@@ -1,0 +1,36 @@
+{
+  "name": "jura-invoice-system",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Jura Solutions quotation, invoice and receipt system \u2014 local, offline, design-system native",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "seed": "node scripts/seed-data.mjs",
+    "export": "node scripts/export-pdf.mjs",
+    "verify": "node scripts/verify-pdf.mjs",
+    "check:layout": "node scripts/check-layout.mjs",
+    "sync:ds": "node scripts/sync-design-system.mjs"
+  },
+  "dependencies": {
+    "@fontsource/dm-sans": "^5.1.0",
+    "@fontsource/ibm-plex-mono": "^5.1.1",
+    "@fontsource/outfit": "^5.1.0",
+    "lucide": "^0.446.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "puppeteer-core": "^23.11.1",
+    "vite": "^6.0.7",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

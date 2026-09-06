@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" role="img" aria-label="Jura Solutions">
+  <mask id="jm3">
+    <rect width="48" height="48" fill="#fff"></rect>
+    <g fill="none" stroke="#000" stroke-width="2.8" stroke-linecap="round">
+      <path d="M24 31V11.5"></path>
+      <path d="M24 21.5L17 15"></path>
+      <path d="M24 21.5L31 15"></path>
+    </g>
+  </mask>
+  <circle cx="24" cy="20" r="14.5" fill="#141814" mask="url(#jm3)"></circle>
+  <rect x="21.7" y="34" width="4.6" height="11" rx="2.3" fill="#141814"></rect>
+</svg>

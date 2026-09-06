@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 248 48" width="248" height="48" role="img" aria-label="Jura Solutions">
+  <mask id="jl1">
+    <rect width="48" height="48" fill="#fff"></rect>
+    <g fill="none" stroke="#000" stroke-width="2.8" stroke-linecap="round">
+      <path d="M24 31V11.5"></path><path d="M24 21.5L17 15"></path><path d="M24 21.5L31 15"></path>
+    </g>
+  </mask>
+  <circle cx="24" cy="20" r="14.5" fill="#0f5132" mask="url(#jl1)"></circle>
+  <rect x="21.7" y="34" width="4.6" height="11" rx="2.3" fill="#0f5132"></rect>
+  <text x="60" y="27" font-family="Outfit, Helvetica, Arial, sans-serif" font-size="22" font-weight="600" letter-spacing="-0.4" fill="#141814">Jura</text>
+  <text x="112" y="27" font-family="Outfit, Helvetica, Arial, sans-serif" font-size="22" font-weight="400" letter-spacing="-0.4" fill="#4e5852">Solutions</text>
+  <text x="61" y="40" font-family="IBM Plex Mono, monospace" font-size="8" letter-spacing="1.2" fill="#0f5132">AUTOMATION CONSULTANCY</text>
+</svg>

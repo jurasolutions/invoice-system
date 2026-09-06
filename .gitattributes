@@ -1,0 +1,10 @@
+# Normalise line endings so the repo is the same on Windows and macOS. The
+# design system is vendored in from a shared folder, so without this every
+# `npm run sync:ds` on a different machine would show as a whole-file diff.
+* text=auto eol=lf
+*.svg text eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary
+*.woff binary
+*.woff2 binary

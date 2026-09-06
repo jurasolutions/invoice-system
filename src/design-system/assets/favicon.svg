@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <mask id="jf1">
+    <rect width="48" height="48" fill="#fff"></rect>
+    <g fill="none" stroke="#000" stroke-width="2.9" stroke-linecap="round">
+      <path d="M24 31V14"></path><path d="M24 23L18.5 17.5"></path><path d="M24 23L29.5 17.5"></path>
+    </g>
+  </mask>
+  <rect width="48" height="48" rx="10" fill="#0f5132"></rect>
+  <circle cx="24" cy="21" r="12.5" fill="#ffffff" mask="url(#jf1)"></circle>
+  <rect x="21.9" y="33.5" width="4.2" height="8.5" rx="2.1" fill="#ffffff"></rect>
+</svg>

@@ -1,0 +1,647 @@
+/* The A4 document.
+ *
+ * Everything here is scoped under `.ju-doc` so the same stylesheet drives the
+ * live preview inside the builder and the page that goes to the printer,
+ * without the app's own chrome leaking into either.
+ *
+ * Colour, type family and radius come from the design system's tokens. Sizes
+ * do not: the design system's type scale is fluid and viewport-relative, which
+ * is right for a web page and wrong for a sheet of paper that is always
+ * exactly 210mm wide. The document's own scale is declared once below, in
+ * print units, and named so it can be reasoned about.
+ *
+ * White first, green sparingly. On these pages green earns four places and no
+ * others: the top rule, the section headings, the amount panel, and the rule
+ * above the grand total.
+ */
+
+.ju-doc {
+  /* Page geometry. Referenced from JS during pagination — see paginate.js. */
+  --page-w: 210mm;
+  --page-h: 297mm;
+  --page-pad-top: 13mm;
+  --page-pad-x: 16mm;
+  --page-pad-bottom: 9mm;
+  --topbar-h: 4mm;
+  /* The single vertical gap between flow blocks. Owned by the container, not
+     by the blocks, so pagination can add up heights without having to reason
+     about collapsing margins. */
+  --flow-gap: 5mm;
+
+  /* The document type scale, in print pixels. */
+  --doc-body: 12.5px;
+  --doc-item: 12px;
+  --doc-small: 11.5px;
+  --doc-note: 10.5px;
+  --doc-num: 11.5px;
+  --doc-eyebrow: 8.5px;
+  --doc-th: 8px;
+  --doc-footer: 10px;
+  --doc-title: 27px;
+  --doc-figure: 26px;
+
+  font-family: var(--font-body);
+  color: var(--neutral-700);
+  font-size: var(--doc-body);
+  line-height: 1.5;
+  letter-spacing: 0.005em;
+  /* Lining, fixed-width digits so columns of money line up on the decimal. */
+  font-variant-numeric: tabular-nums;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.ju-doc *,
+.ju-doc *::before,
+.ju-doc *::after {
+  box-sizing: border-box;
+}
+
+.ju-doc h1, .ju-doc h2, .ju-doc h3, .ju-doc h4, .ju-doc p,
+.ju-doc dl, .ju-doc dd, .ju-doc dt, .ju-doc table {
+  margin: 0;
+  padding: 0;
+}
+
+/* ---------------------------------------------------------------- the page */
+
+.ju-page {
+  width: var(--page-w);
+  height: var(--page-h);
+  background: var(--white);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: var(--page-pad-top) var(--page-pad-x) var(--page-pad-bottom);
+  overflow: hidden;
+  break-after: page;
+  page-break-after: always;
+}
+
+.ju-page:last-child {
+  break-after: auto;
+  page-break-after: auto;
+}
+
+/* On screen the pages sit apart on a grey ground, like sheets on a desk.
+   In print they butt up against the paper edge — see the print block below. */
+.ju-doc--screen .ju-page {
+  margin: 0 auto 8mm;
+  box-shadow: var(--shadow-lg);
+  border-radius: 2px;
+}
+
+.ju-topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--topbar-h);
+  background: var(--green-600);
+}
+
+.ju-topbar i {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: var(--topbar-h);
+  width: 26mm;
+  background: var(--green-900);
+  display: block;
+}
+
+/* The band that holds the flowing content. It takes exactly the height of
+   what the paginator put on this page — no more — so the footer sits at the
+   bottom of the sheet rather than under the last line. */
+.ju-page-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--flow-gap);
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+/* -------------------------------------------------------------- the header */
+
+.ju-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14mm;
+  padding-top: 3mm;
+}
+
+.ju-head-right { text-align: right; }
+
+.ju-doc-title {
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
+  font-size: var(--doc-title);
+  letter-spacing: -0.02em;
+  color: var(--neutral-900);
+  line-height: 1;
+}
+
+.ju-doc-sub {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: var(--tracking-overline);
+  text-transform: uppercase;
+  color: var(--neutral-500);
+  margin-top: 2.2mm;
+}
+
+.ju-meta {
+  margin-top: 3mm;
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 1.1mm 6mm;
+  justify-content: end;
+}
+
+.ju-meta dt {
+  font-family: var(--font-mono);
+  font-size: var(--doc-eyebrow);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--neutral-500);
+  white-space: nowrap;
+}
+
+.ju-meta dd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--neutral-900);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+
+.ju-meta dd.is-key { color: var(--green-600); }
+
+/* -------------------------------------------------------------- the parties */
+
+.ju-parties {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10mm;
+  padding-top: 4mm;
+  border-top: 1px solid var(--neutral-200);
+}
+
+.ju-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--doc-eyebrow);
+  letter-spacing: var(--tracking-overline);
+  text-transform: uppercase;
+  color: var(--neutral-500);
+  margin-bottom: 2.5mm;
+}
+
+.ju-party strong {
+  display: block;
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
+  font-size: 14px;
+  color: var(--neutral-900);
+  letter-spacing: -0.01em;
+  margin-bottom: 1mm;
+}
+
+.ju-party p {
+  font-size: var(--doc-small);
+  color: var(--neutral-600);
+  line-height: 1.55;
+}
+
+/* A detail that has not been confirmed yet. Grey, so it reads as a gap rather
+   than as a fact. The app refuses to issue while one of these is showing. */
+.ju-tbc { color: var(--neutral-400); }
+
+/* --------------------------------------------------------- the amount strip */
+
+.ju-strip {
+  background: var(--green-50);
+  border: 1px solid var(--green-100);
+  border-radius: var(--radius-lg);
+  padding: 4mm 5mm;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8mm;
+}
+
+.ju-strip .ju-strip-label {
+  font-family: var(--font-mono);
+  font-size: var(--doc-eyebrow);
+  letter-spacing: var(--tracking-overline);
+  text-transform: uppercase;
+  color: var(--green-600);
+}
+
+.ju-strip .ju-strip-figure {
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
+  font-size: var(--doc-figure);
+  letter-spacing: -0.02em;
+  color: var(--green-900);
+  line-height: 1.1;
+  margin-top: 1.5mm;
+}
+
+.ju-strip .ju-strip-right {
+  text-align: right;
+  font-size: var(--doc-small);
+  color: var(--neutral-600);
+}
+
+.ju-strip .ju-strip-right b {
+  display: block;
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
+  font-size: 13.5px;
+  color: var(--neutral-900);
+  margin-top: 2mm;
+}
+
+.ju-strip--paid { border-color: var(--green-200); }
+
+.ju-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 1.5mm;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  background: var(--green-600);
+  color: var(--white);
+  border-radius: var(--radius-full);
+  padding: 1.4mm 3mm;
+  font-weight: var(--weight-medium);
+}
+
+.ju-pill--quiet {
+  background: var(--white);
+  color: var(--green-600);
+  border: 1px solid var(--green-200);
+}
+
+/* ---------------------------------------------------------- the line items */
+
+.ju-section { display: flow-root; }
+
+.ju-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 3mm;
+  border-bottom: 1.5px solid var(--green-600);
+  padding-bottom: 1.8mm;
+}
+
+.ju-section-head h3 {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: var(--tracking-overline);
+  text-transform: uppercase;
+  color: var(--green-600);
+  font-weight: var(--weight-medium);
+}
+
+.ju-section-head span {
+  font-size: 11px;
+  color: var(--neutral-500);
+  margin-left: auto;
+  text-align: right;
+}
+
+.ju-doc table { width: 100%; border-collapse: collapse; }
+
+.ju-doc thead th {
+  font-family: var(--font-mono);
+  font-size: var(--doc-th);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--neutral-500);
+  font-weight: var(--weight-regular);
+  text-align: right;
+  padding: 1.8mm 0 1.3mm;
+  border-bottom: 1px solid var(--neutral-100);
+}
+
+.ju-doc thead th:first-child { text-align: left; }
+
+.ju-doc tbody td {
+  padding: 1.9mm 0;
+  border-bottom: 1px solid var(--neutral-100);
+  vertical-align: top;
+  text-align: right;
+  font-size: var(--doc-item);
+  color: var(--neutral-800);
+}
+
+.ju-doc tbody td:first-child { text-align: left; padding-right: 6mm; }
+
+.ju-doc tbody td .ju-item-note {
+  display: block;
+  font-size: var(--doc-note);
+  color: var(--neutral-500);
+  margin-top: 0.8mm;
+  line-height: 1.45;
+}
+
+.ju-doc td.ju-num {
+  font-family: var(--font-mono);
+  font-size: var(--doc-num);
+  white-space: nowrap;
+}
+
+.ju-doc col.ju-c-qty { width: 14mm; }
+.ju-doc col.ju-c-unit { width: 26mm; }
+.ju-doc col.ju-c-amt { width: 28mm; }
+.ju-doc col.ju-c-date { width: 30mm; }
+.ju-doc col.ju-c-ref { width: 32mm; }
+
+.ju-doc tr.ju-subtotal td {
+  border-bottom: none;
+  padding-top: 1.9mm;
+  font-size: 11px;
+  color: var(--neutral-500);
+}
+
+.ju-doc tr.ju-subtotal td.ju-num {
+  color: var(--neutral-700);
+  font-weight: var(--weight-medium);
+}
+
+/* ------------------------------------------------------------- the totals */
+
+.ju-totals {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ju-totals table { width: 82mm; }
+
+.ju-totals td {
+  padding: 1.5mm 0;
+  font-size: var(--doc-item);
+  border: none;
+  text-align: right;
+  color: var(--neutral-600);
+}
+
+.ju-totals td:first-child { text-align: left; padding-right: 0; }
+.ju-totals tr.ju-rule td { border-top: 1px solid var(--neutral-300); padding-top: 2.2mm; }
+
+.ju-totals tr.ju-grand td {
+  border-top: 2px solid var(--green-600);
+  padding-top: 2.4mm;
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
+  font-size: 15px;
+  color: var(--green-900);
+}
+
+.ju-totals td.ju-num {
+  font-family: var(--font-mono);
+  font-size: var(--doc-item);
+  color: var(--neutral-800);
+}
+
+.ju-totals tr.ju-grand td.ju-num {
+  font-family: var(--font-display);
+  font-size: 16px;
+  color: var(--green-900);
+}
+
+/* Greyed, because it is a statement that nothing was charged rather than a
+   line of the bill. */
+.ju-gst-off { color: var(--neutral-400); font-size: var(--doc-note); }
+
+/* -------------------------------------------------------------- the panels */
+
+.ju-panel {
+  border: 1px solid var(--neutral-200);
+  border-radius: var(--radius-lg);
+  padding: 4mm 5mm;
+}
+
+.ju-panel--tint { background: var(--green-50); border-color: var(--green-100); }
+.ju-panel--warm { background: var(--neutral-25); }
+
+.ju-panel h4 {
+  font-family: var(--font-mono);
+  font-size: var(--doc-eyebrow);
+  letter-spacing: var(--tracking-overline);
+  text-transform: uppercase;
+  color: var(--neutral-500);
+  font-weight: var(--weight-medium);
+  margin-bottom: 2.4mm;
+}
+
+.ju-panel--tint h4 { color: var(--green-600); }
+
+.ju-panel p {
+  font-size: var(--doc-small);
+  color: var(--neutral-700);
+  line-height: 1.6;
+  max-width: 150mm;
+}
+
+.ju-panel p + p { margin-top: 2mm; }
+.ju-panel p b { font-weight: var(--weight-bold); color: var(--neutral-900); }
+
+.ju-paygrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; }
+
+.ju-paygrid dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1.4mm 4mm;
+  font-size: var(--doc-small);
+}
+
+.ju-paygrid dt { color: var(--neutral-500); }
+.ju-paygrid dd { color: var(--neutral-800); font-family: var(--font-mono); font-size: 11px; }
+
+.ju-panel .ju-stamp {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--neutral-500);
+  margin-top: 3.5mm;
+  display: block;
+}
+
+.ju-panel .ju-ref {
+  margin-top: 3.5mm;
+  font-size: var(--doc-small);
+  color: var(--neutral-700);
+  border-top: 1px solid var(--neutral-200);
+  padding-top: 3mm;
+}
+
+.ju-panel .ju-ref b { font-family: var(--font-mono); font-size: var(--doc-small); color: var(--green-600); }
+
+/* ----------------------------------------------------------- the signature */
+
+.ju-sign { display: grid; grid-template-columns: 1fr 1fr; gap: 12mm; margin-top: 3.5mm; }
+
+.ju-sign div {
+  border-top: 1px solid var(--neutral-400);
+  padding-top: 2mm;
+  font-family: var(--font-mono);
+  font-size: var(--doc-eyebrow);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--neutral-500);
+}
+
+.ju-sign .ju-sign-line { height: 11mm; border: none; padding: 0; }
+
+/* --------------------------------------------------- the continuation head */
+
+.ju-cont {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8mm;
+  padding-top: 3mm;
+  padding-bottom: 4mm;
+  border-bottom: 1px solid var(--neutral-200);
+}
+
+.ju-cont .ju-cont-who { display: flex; align-items: center; gap: 3mm; }
+
+.ju-cont .ju-cont-who b {
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
+  font-size: 13px;
+  color: var(--neutral-900);
+}
+
+.ju-cont .ju-cont-right {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--neutral-500);
+  text-align: right;
+}
+
+.ju-cont .ju-cont-right em {
+  display: block;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--green-600);
+  font-weight: var(--weight-medium);
+  margin-top: 1mm;
+  letter-spacing: 0;
+}
+
+/* -------------------------------------------------------------- the footer */
+
+.ju-foot {
+  margin-top: auto;
+  padding-top: 4mm;
+  border-top: 1px solid var(--neutral-200);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 8mm;
+  font-size: var(--doc-footer);
+  color: var(--neutral-500);
+  line-height: 1.5;
+}
+
+.ju-foot .ju-legal { max-width: 120mm; }
+
+.ju-foot .ju-page-no {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* Amber, and never omitted. Sample data must not be able to pass for real. */
+.ju-specimen {
+  font-family: var(--font-mono);
+  font-size: var(--doc-eyebrow);
+  letter-spacing: var(--tracking-overline);
+  text-transform: uppercase;
+  color: var(--amber-600);
+  background: var(--amber-100);
+  border-radius: var(--radius-full);
+  padding: 1mm 2.5mm;
+  display: inline-block;
+  margin-bottom: 2mm;
+}
+
+/* ------------------------------------------------------------ measuring rig
+ *
+ * Pagination measures each block at its real width before deciding which page
+ * it lands on. The rig has to be laid out for that measurement to mean
+ * anything, so it is moved off-screen rather than hidden — `display: none` and
+ * `visibility: hidden` both give a height of zero.
+ */
+
+.ju-measure {
+  position: absolute;
+  top: 0;
+  left: -20000px;
+  width: calc(var(--page-w) - (2 * var(--page-pad-x)));
+  display: flex;
+  flex-direction: column;
+  gap: var(--flow-gap);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* ----------------------------------------------------------------- print
+ *
+ * `margin: 0` on the page box with the padding on `.ju-page` itself is what
+ * makes the browser preview and the exported PDF identical. Leave the margin
+ * to the printer and the two disagree by a few millimetres, which is enough
+ * to push the last line of a page onto the next one.
+ */
+
+@page {
+  size: A4 portrait;
+  margin: 0;
+}
+
+@media print {
+  .ju-doc--screen .ju-page {
+    margin: 0;
+    box-shadow: none;
+    border-radius: 0;
+  }
+
+  /* The measuring rig holds two full-size page shells, and `page-break-after`
+     applies to them even though they are positioned off-screen — they came out
+     as two extra blank sheets on every export. It has done its job by the time
+     anything prints, so it goes away entirely. */
+  .ju-measure {
+    display: none !important;
+  }
+}
+
+/* ------------------------------------------------- measuring the page box
+ *
+ * The paginator needs the exact height available to the flow on a first page
+ * and on a continuation page. Rather than adding the paddings, the header and
+ * the footer up in JavaScript and hoping the arithmetic matches what the
+ * browser did, it renders a real page shell off-screen and asks the browser.
+ *
+ * These two rules exist only for that shell: the body stretches to fill the
+ * space the flow will actually get, and the footer stops floating to the
+ * bottom so it does not eat the space first.
+ */
+
+.ju-measure > * { flex: 0 0 auto; }
+.ju-measure-page .ju-page-body { flex: 1 1 auto; }
+.ju-measure-page .ju-foot { margin-top: 0; }
+
+/* A probe the paginator measures to learn --flow-gap in pixels. */
+.ju-gap-probe { height: var(--flow-gap); }

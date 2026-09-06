@@ -1,0 +1,76 @@
+:root {
+  /* ---- Green: the single brand hue. Deep forest, muted, never lime. ---- */
+  --green-50:  #f0f6f2;
+  --green-100: #dbebe1;
+  --green-200: #b6d6c4;
+  --green-300: #86b89e;
+  --green-400: #4f9673;
+  --green-500: #2a7854;
+  --green-600: #0f5132; /* primary */
+  --green-700: #0c4229;
+  --green-800: #093320;
+  --green-900: #062217;
+
+  /* ---- Neutrals: cool-leaning near-whites through near-black ---- */
+  --white:     #ffffff;
+  --neutral-25:  #fafbfa;
+  --neutral-50:  #f5f7f5;
+  --neutral-100: #ecefec;
+  --neutral-200: #dfe3e0;
+  --neutral-300: #c6ccc8;
+  --neutral-400: #9aa39d;
+  --neutral-500: #6f7973;
+  --neutral-600: #4e5852;
+  --neutral-700: #363e39;
+  --neutral-800: #222824;
+  --neutral-900: #141814;
+
+  /* ---- Support: used sparingly, for status only ---- */
+  --amber-100: #f8efd9;
+  --amber-600: #a97514;
+  --red-100:   #f9e4e2;
+  --red-600:   #b3261e;
+  --blue-100:  #e2eef4;
+  --blue-600:  #1f5f7f;
+
+  /* ---- Semantic aliases: prefer these in components ---- */
+  --brand:            var(--green-600);
+  --brand-hover:      var(--green-700);
+  --brand-active:     var(--green-800);
+  --brand-subtle:     var(--green-50);
+  --brand-subtle-2:   var(--green-100);
+  --brand-border:     var(--green-200);
+  --brand-on:         var(--white);
+
+  --text-strong:      var(--neutral-900);
+  --text-body:        var(--neutral-700);
+  --text-muted:       var(--neutral-500);
+  --text-faint:       var(--neutral-400);
+  --text-on-brand:    var(--white);
+  --text-brand:       var(--green-600);
+  --text-link:        var(--green-600);
+  --text-link-hover:  var(--green-800);
+
+  --surface-page:     var(--white);
+  --surface-sunken:   var(--neutral-50);
+  --surface-card:     var(--white);
+  --surface-inverse:  var(--green-900);
+  --surface-brand:    var(--green-600);
+  --surface-hover:    var(--neutral-50);
+
+  --border-subtle:    var(--neutral-200);
+  --border-default:   var(--neutral-300);
+  --border-strong:    var(--neutral-400);
+  --border-focus:     var(--green-600);
+
+  --success-fg: var(--green-600);
+  --success-bg: var(--green-50);
+  --warning-fg: var(--amber-600);
+  --warning-bg: var(--amber-100);
+  --danger-fg:  var(--red-600);
+  --danger-bg:  var(--red-100);
+  --info-fg:    var(--blue-600);
+  --info-bg:    var(--blue-100);
+
+  --focus-ring: 0 0 0 3px rgba(15, 81, 50, 0.20);
+}

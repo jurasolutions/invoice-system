@@ -1,0 +1,17 @@
+node_modules/
+dist/
+
+# Client billing data never goes in the repo. It lives outside, in
+# jurasolutions/data/invoices/ — see README, "Where the data lives".
+/data/
+/outputs/
+
+# Lock directory left behind by a crashed number assignment.
+*.lock/
+
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+.vscode/
+.idea/

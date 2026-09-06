@@ -1,0 +1,37 @@
+:root {
+  --font-display: "Outfit", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-body:    "DM Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono:    "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Fluid display sizes — mobile first, cap at desktop */
+  --text-display-1: clamp(2.5rem, 1.6rem + 3.6vw, 4.25rem);  /* 40 → 68 */
+  --text-display-2: clamp(2rem, 1.4rem + 2.4vw, 3.25rem);    /* 32 → 52 */
+  --text-h1: clamp(1.75rem, 1.35rem + 1.6vw, 2.5rem);        /* 28 → 40 */
+  --text-h2: clamp(1.5rem, 1.25rem + 1vw, 2rem);             /* 24 → 32 */
+  --text-h3: clamp(1.25rem, 1.15rem + 0.5vw, 1.5rem);        /* 20 → 24 */
+  --text-h4: 1.125rem;
+  --text-body-lg: 1.1875rem;
+  --text-body: 1.0625rem;
+  --text-body-sm: 0.9375rem;
+  --text-caption: 0.8125rem;
+  --text-overline: 0.75rem;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --leading-tight: 1.08;
+  --leading-snug: 1.2;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  /* Geometric faces need a little air at text sizes and a tighter grip at display */
+  --tracking-display: -0.025em;
+  --tracking-heading: -0.015em;
+  --tracking-body: 0.005em;
+  --tracking-overline: 0.11em;
+
+  --measure-prose: 66ch;
+  --measure-narrow: 46ch;
+}
