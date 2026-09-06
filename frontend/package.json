@@ -1,0 +1,26 @@
+{
+  "name": "@jura/frontend",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "description": "The Jura invoicing app. Deployed to Cloudflare Pages.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "sync:ds": "node scripts/sync-design-system.mjs"
+  },
+  "dependencies": {
+    "@fontsource/dm-sans": "^5.1.0",
+    "@fontsource/ibm-plex-mono": "^5.1.1",
+    "@fontsource/outfit": "^5.1.0",
+    "@jura/shared": "*",
+    "lucide": "^0.446.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.7"
+  }
+}

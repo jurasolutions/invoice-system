@@ -1,36 +1,68 @@
 # Jura Solutions — invoicing and receipt system
 
-Quotations, invoices and receipts as A4 PDFs, in the Jura visual language, running
-locally on one machine with no connectors and no network calls.
+Quotations, invoices and receipts as A4 PDFs, in the Jura visual language.
+
+A static frontend for Cloudflare Pages, an API for Railway, and a shared domain that both
+import so they cannot disagree about what a document is worth. It runs entirely on one
+machine too, which is how it is developed.
 
 Built against `prd/pending/prd-jura-invoicing-2026-09-06.md` and the concept design at
-`outputs/concepts/jura-invoicing-concept-2026-09-06.pdf`.
+`outputs/concepts/jura-invoicing-concept-2026-09-06.pdf`. The hosted split follows
+`prd/pending/prd-jura-invoicing-hosted-2026-09-06.md`.
 
 ---
 
 ## Running it
 
 ```bash
-npm install                        # also vendors the design system
+npm install                        # workspace install: shared, backend, frontend
 npm run seed -- --with-specimen    # creates the data tree, plus the concept's documents
-npm run dev                        # http://localhost:5174
+npm run dev                        # api on :5175, app on :5174 - open :5174
 ```
+
+Sign in with **`admin` / `P@ssw0rd`**. That default is published in this repo, which is
+exactly why the server refuses to start in production without a real one — see
+**Authentication** below.
 
 `npm run seed` on its own creates an empty data tree — config, counters, clients and the
 five templates, with no documents. Use that for a real start. `--with-specimen` adds the
 three documents from the concept design so there is something to look at.
 
-Other commands:
-
 | Command | Does |
 | --- | --- |
-| `npm test` | The unit and store tests |
-| `npm run export -- JURA-2026-09-001` | Renders one document to `outputs/invoices/` |
-| `npm run export -- --all` | Renders every issued document |
-| `npm run verify -- --all` | Checks the exported PDFs are A4 with fonts embedded |
+| `npm run dev` | Both halves, with the frontend proxying `/__api` to the backend |
+| `npm test` | The domain and store tests (87) |
+| `npm run check:auth` | Asserts every data route refuses an unknown caller |
 | `npm run check:layout` | Renders a long document and checks the pagination |
+| `npm run export -- --all` | Renders every issued document to `outputs/invoices/` |
+| `npm run verify -- --all` | Checks the exported PDFs are A4 with fonts embedded |
+| `npm run hash-password -- '...'` | Turns a password into what `ADMIN_PASSWORD_HASH` wants |
+| `npm run build` | Frontend bundle into `frontend/dist` |
 | `npm run sync:ds` | Re-copies the design system from source |
-| `npm run build` | Production bundle (see "The local API" below) |
+
+---
+
+## How it is split
+
+```
+frontend/   the app, a static bundle          -> Cloudflare Pages
+backend/    the API, the rules, the records   -> Railway
+shared/     pure domain logic, no I/O         -> imported by both
+tools/      export, verification, dev runner  -> deployed nowhere
+```
+
+The split is not cosmetic. **The rules that make the records defensible live in
+`backend/`**, where a browser cannot reach them. `frontend/` is a bundle a person can
+read and modify, so nothing it does is trusted: it holds no credentials, and every route
+it calls is checked again on the server.
+
+`shared/` is the reason the two agree. Money, numbering, dates and the document record are
+pure functions with no filesystem and no DOM, imported by both halves as `@jura/shared`.
+The totals in the live preview and the totals written to disk are the same code.
+
+Locally, the Vite dev server proxies `/__api` to the backend so the browser sees one
+origin. Hosted, they are two different sites and requests go cross-site with credentials —
+which is why `ALLOWED_ORIGIN` has to name the frontend exactly.
 
 ---
 
@@ -62,8 +94,8 @@ runs to four digits past 999.
   The number stays in the sequence, marked void, which is exactly what an auditor wants
   to see.
 
-The rules live in `src/domain/numbering.js`; the atomic write and the lock live in
-`server/atomic.mjs`; the assignment lives in `server/store.mjs`.
+The rules live in `shared/src/numbering.js`; the atomic write and the lock live in
+`backend/src/atomic.mjs`; the assignment lives in `backend/src/store.mjs`.
 
 ### 2. An issued document is frozen
 
@@ -73,7 +105,7 @@ convenience, not the guard.
 
 What can still change is what happened to it *afterwards*: status, payments recorded
 against it, and the links to a receipt or credit note raised from it. That list is
-`MUTABLE_AFTER_ISSUE` in `src/domain/document.js`.
+`MUTABLE_AFTER_ISSUE` in `shared/src/document.js`.
 
 Corrections go on a **credit note**. There is no other way, on purpose.
 
@@ -88,10 +120,79 @@ Two things are snapshotted onto the document at issue, for the same reason:
 
 Everywhere. `1274000`, not `12740.00`. Floats do not represent 0.1 exactly, and the drift
 lands as a cent the client did not agree to pay. Formatting happens only at the render
-boundary, in `src/domain/money.js`.
+boundary, in `shared/src/money.js`.
 
 Quantity is the one legitimately fractional value (2.5 hours of support). It is scaled to
 thousandths so the line amount is an integer multiplication rather than a float one.
+
+---
+
+## Authentication
+
+One user, a password, and a signed token in an HttpOnly cookie. No session store — the
+token carries the username and an expiry, and an HMAC proves the server issued it.
+
+**The default is `admin` / `P@ssw0rd`, and it is published in this repo.** Treat it as
+public, because it is. It exists so the app works the moment you clone it.
+
+That is fine on a laptop and unsafe on the internet, so the server **refuses to start when
+`NODE_ENV=production` unless `ADMIN_PASSWORD_HASH` is set to something else**. There is no
+way to deploy the default by forgetting to change it. The app also shows a banner while it
+is running on the default, so it cannot be quietly forgotten.
+
+To set a real one:
+
+```bash
+npm run hash-password -- 'a long passphrase you have not used elsewhere'
+```
+
+It prints an `ADMIN_PASSWORD_HASH` and a `SESSION_SECRET`. Put both in the Railway
+environment. The password itself never goes into the repo, an env var, or a log — only its
+scrypt hash does.
+
+`npm run check:auth` asserts the parts that matter, which are the refusals: every data
+route without a session, a wrong password, a tampered signature, an expired token, an
+unsigned token, and that the cookie is HttpOnly.
+
+---
+
+## Deploying
+
+### Backend, on Railway
+
+Point a service at this repo. `railway.json` sets the build and start commands and a
+health check on `/__api/health`. Set in the service environment:
+
+| Variable | |
+| --- | --- |
+| `ADMIN_PASSWORD_HASH` | from `npm run hash-password` — **required** |
+| `SESSION_SECRET` | 32+ random bytes — **required** |
+| `ALLOWED_ORIGIN` | the exact frontend origin, e.g. `https://invoices.jurasolutions.sg` |
+| `NODE_ENV` | `production` |
+
+A wildcard origin is not allowed alongside credentials, so `ALLOWED_ORIGIN` has to be
+spelled out. Railway sets `PORT` itself.
+
+### Frontend, on Cloudflare Pages
+
+| Setting | Value |
+| --- | --- |
+| Build command | `npm run build` |
+| Output directory | `frontend/dist` |
+| Root directory | the repo root (the workspace install needs it) |
+| `VITE_API_URL` | the Railway service URL |
+
+`VITE_API_URL` is baked into the bundle at build time, so it is public. That is fine — it
+is an address, not a secret. Nothing else about the deployment is in the bundle.
+
+### One thing that is not solved yet
+
+`backend/` still reads and writes JSON files, and **Railway's container filesystem is
+ephemeral — a redeploy wipes it.** Deployed as it stands, the records would not survive.
+Moving the store to Postgres is the subject of
+`prd/pending/prd-jura-invoicing-hosted-2026-09-06.md`; until that is done, the hosted
+backend is only safe against a mounted volume, and the filesystem build on a real machine
+remains the system of record.
 
 ---
 
@@ -110,7 +211,7 @@ jurasolutions/
 └── outputs/invoices/       rendered PDFs, named by document number
 ```
 
-Those paths are resolved by `server/paths.mjs` and printed when the dev server starts. If
+Those paths are resolved by `backend/src/paths.mjs` and printed when the dev server starts. If
 the repo is checked out somewhere other than `jurasolutions/repos/`, both fall back to
 folders inside the repo, which `.gitignore` excludes. `JURA_DATA_PATH` and
 `JURA_OUTPUT_PATH` override.
@@ -192,14 +293,14 @@ be — which is what "Page 1 of 3" needs.
 
 So the renderer measures first and decides second:
 
-1. `src/render/flow.jsx` turns the record into a flat list of blocks. Sections carry their
+1. `frontend/src/render/flow.jsx` turns the record into a flat list of blocks. Sections carry their
    rows separately, so a long one can be cut between rows rather than pushed whole onto
    the next page.
-2. `src/render/DocumentView.jsx` renders every block off-screen at the exact width it will
+2. `frontend/src/render/DocumentView.jsx` renders every block off-screen at the exact width it will
    have on the page, and measures it. Twice — once immediately, and again once the
    webfonts have loaded, because Outfit and DM Sans are not the same height as the
    fallback.
-3. `src/render/paginate.js` fills page boxes with those measurements.
+3. `frontend/src/render/paginate.js` fills page boxes with those measurements.
 
 If any measurement cannot be taken, the layout is abandoned rather than guessed: the page
 stays unready and the export refuses. A missing measurement reads as zero, a
@@ -222,7 +323,7 @@ The design system's `tokens/fonts.css` uses a remote `@import`. That fails silen
 offline and under headless Chromium, and Chromium falls back to Helvetica — which would
 put a client's invoice in the wrong typeface for the five years they have to keep it.
 `npm run sync:ds` rewrites that one file *in the vendored copy* to point at
-`src/styles/fonts.local.css`. The design system at source is untouched.
+`frontend/src/styles/fonts.local.css`. The design system at source is untouched.
 
 `npm run verify` checks the exported PDFs actually carry embedded font programs, so this
 cannot regress quietly.
@@ -254,7 +355,7 @@ whole document.
 
 ## The local API
 
-The app reads and writes real JSON files, which a browser cannot do. `server/api.mjs`
+The app reads and writes real JSON files, which a browser cannot do. `backend/src/api.mjs`
 runs as Vite dev-server middleware on localhost and does the filesystem work.
 
 This is not a backend in the usual sense — no auth, no hosting, no network exposure, and
@@ -266,28 +367,36 @@ bundle has no data API behind it; this is a local tool by design.
 ## Repo map
 
 ```
-server/           the local data API and everything that touches the filesystem
-  paths.mjs         where the data and the PDFs live
-  atomic.mjs        atomic writes and the counter lock
-  store.mjs         the store — enforces numbering and immutability
-  api.mjs           HTTP routes, dev-server middleware
+shared/                pure domain logic, no I/O - imported by both halves
+  src/money.js           integer cents
+  src/numbering.js       the numbering rules
+  src/dates.js           calendar dates, not instants
+  src/document.js        the record, its totals, what may change after issue
+  src/defaults/          the shipped config, templates and specimen documents
+  tests/                 the domain tests
 
-src/domain/       pure logic, shared by the browser and Node
-  money.js          integer cents
-  numbering.js      the numbering rules
-  dates.js          calendar dates, not instants
-  document.js       the record, its totals, and what may change after issue
+backend/               the API and the records -> Railway
+  src/server.mjs         standalone HTTP server, the Railway entry point
+  src/api.mjs            routes, auth gate, CORS
+  src/auth.mjs           passwords, sessions, the production guard
+  src/store.mjs          the store - enforces numbering and immutability
+  src/atomic.mjs         atomic writes and the counter lock
+  src/paths.mjs          where the data and the PDFs live
+  scripts/               seed, hash-password
+  tests/                 store and lifecycle tests, against a real data tree
 
-src/render/       the A4 document
-  document.css      the print stylesheet
-  blocks.jsx        header, parties, amount strip, items, totals, panels, footer
-  flow.jsx          the document as a flat list of measurable blocks
-  paginate.js       filling page boxes
-  DocumentView.jsx  measure, then lay out
+frontend/              the app -> Cloudflare Pages
+  src/app/               the builder UI, the login, the API client
+  src/render/            the A4 document, the print stylesheet, pagination
+  src/design-system/     vendored, read-only
+  scripts/               sync-design-system
 
-src/app/          the builder UI
-scripts/          seed, sync, export, verify, layout check
-tests/            unit and store tests
+tools/                 dev tooling, deployed nowhere
+  dev.mjs                runs both halves
+  export-pdf.mjs         renders a document to PDF
+  verify-pdf.mjs         checks an exported PDF is A4 with fonts embedded
+  check-layout.mjs       renders a long document, checks the pagination
+  check-auth.mjs         checks what the login refuses
 ```
 
 ---

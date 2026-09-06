@@ -1,0 +1,11 @@
+{
+  "name": "@jura/shared",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "description": "Pure domain logic - money, numbering, dates, the document record. No I/O, no DOM.",
+  "exports": {
+    ".": "./src/index.js",
+    "./*": "./src/*"
+  }
+}

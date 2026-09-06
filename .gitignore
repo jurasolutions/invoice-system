@@ -1,6 +1,11 @@
 node_modules/
 dist/
 
+# Secrets. The example is the only one that is committed.
+.env
+.env.*
+!.env.example
+
 # Client billing data never goes in the repo. It lives outside, in
 # jurasolutions/data/invoices/ — see README, "Where the data lives".
 /data/

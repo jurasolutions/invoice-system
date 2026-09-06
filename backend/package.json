@@ -1,0 +1,19 @@
+{
+  "name": "@jura/backend",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "description": "The Jura invoicing API. Deployed to Railway.",
+  "main": "src/server.mjs",
+  "scripts": {
+    "dev": "node --watch src/server.mjs",
+    "start": "node src/server.mjs",
+    "seed": "node scripts/seed.mjs"
+  },
+  "dependencies": {
+    "@jura/shared": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
