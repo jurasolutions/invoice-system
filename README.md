@@ -179,7 +179,7 @@ environment:
 | --- | --- |
 | `DATABASE_URL` | the Supabase **session pooler** string — **required** |
 | `SESSION_SECRET` | 32+ random bytes — **required** |
-| `ALLOWED_ORIGIN` | the exact frontend origin, e.g. `https://invoice-system.jurasolutions.com` |
+| `ALLOWED_ORIGIN` | the exact frontend origin, e.g. `https://invoice-system.jurasolutions.sg` |
 | `NODE_ENV` | `production` |
 | `ADMIN_PASSWORD_HASH` | optional — creates the admin on first boot if there are no users |
 
@@ -207,7 +207,7 @@ Full step-by-step, including the domains and the two things that will bite you:
 IPv6 address, which Railway cannot reach. The pooler
 (`aws-0-ap-southeast-1.pooler.supabase.com:5432`, user `postgres.<ref>`) is IPv4.
 
-**The API needs a subdomain of the same domain as the app** — `api.invoice.jurasolutions.com`, not
+**The API needs a subdomain of the same domain as the app** — `api.invoice.jurasolutions.sg`, not
 the `*.up.railway.app` address. The session is a cookie; across different sites it is a
 third-party cookie, which Safari blocks outright. Sign-in would work in Chrome on your
 laptop and fail on your phone.

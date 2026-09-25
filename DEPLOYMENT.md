@@ -1,7 +1,7 @@
 # Deploying
 
-Target: **https://invoice-system.jurasolutions.com**, with the API on
-**https://api.invoice.jurasolutions.com** and the records in **Supabase Postgres**.
+Target: **https://invoice-system.jurasolutions.sg**, with the API on
+**https://api.invoice.jurasolutions.sg** and the records in **Supabase Postgres**.
 
 Frontend on Cloudflare Pages, backend on Railway, database on Supabase. Roughly half an
 hour, most of it waiting for DNS.
@@ -31,19 +31,19 @@ server parses it without needing it URL-encoded, `@` and `&` included.
 
 Not the `*.up.railway.app` address Railway gives you by default.
 
-The session lives in a cookie. If the app is on `jurasolutions.com` and the API is on
+The session lives in a cookie. If the app is on `jurasolutions.sg` and the API is on
 `railway.app`, that cookie is a **third-party** cookie — and Safari blocks those outright,
 with Chrome and Firefox tightening steadily. Sign-in would work on your laptop in Chrome
 and fail on your phone, which is the worst way to find out.
 
-Put the API on `api.invoice.jurasolutions.com` and both halves are the same site.
+Put the API on `api.invoice.jurasolutions.sg` and both halves are the same site.
 
 ---
 
 ## Before you start
 
-- `jurasolutions.com` is a zone in your Cloudflare account. If it is a different domain
-  from `jurasolutions.sg`, add it to Cloudflare first and let the nameservers propagate.
+- `jurasolutions.sg` is a zone in your Cloudflare account, with its nameservers pointed at
+  Cloudflare.
 - The repo is pushed and Railway/Cloudflare can see it.
 - A session secret:
 
@@ -99,7 +99,7 @@ more than one is safe too.
 | `DATABASE_URL` | the Supabase **session pooler** string (see above) |
 | `SESSION_SECRET` | the 64-character hex from `npm run hash-password` |
 | `NODE_ENV` | `production` |
-| `ALLOWED_ORIGIN` | `https://invoice-system.jurasolutions.com` |
+| `ALLOWED_ORIGIN` | `https://invoice-system.jurasolutions.sg` |
 | `ADMIN_PASSWORD_HASH` | optional — only if you skipped step 2; creates `admin` on first boot |
 
 Do not set `PORT` — Railway sets it.
@@ -113,23 +113,23 @@ users to sign in with.
 
 ## 5. Railway — custom domain
 
-Service → Settings → **Networking → Custom Domain** → `api.invoice.jurasolutions.com`.
+Service → Settings → **Networking → Custom Domain** → `api.invoice.jurasolutions.sg`.
 
-Railway gives you a CNAME target. In **Cloudflare → jurasolutions.com → DNS**, add:
+Railway gives you a CNAME target. In **Cloudflare → jurasolutions.sg → DNS**, add:
 
 | Type | Name | Target | Proxy |
 | --- | --- | --- | --- |
 | CNAME | `api.invoice` | the target Railway shows | **DNS only (grey cloud)** |
 
-**Keep the proxy off.** `api.invoice.jurasolutions.com` is two levels below the zone, and
-Cloudflare's free Universal SSL certificate only covers one level (`*.jurasolutions.com`).
+**Keep the proxy off.** `api.invoice.jurasolutions.sg` is two levels below the zone, and
+Cloudflare's free Universal SSL certificate only covers one level (`*.jurasolutions.sg`).
 Proxied, browsers would get a certificate error. With the proxy off, Railway serves its own
 certificate for the name, which is all it needs.
 
 Wait for Railway to show the domain as active, then check:
 
 ```
-https://api.invoice.jurasolutions.com/__api/health
+https://api.invoice.jurasolutions.sg/__api/health
 ```
 
 You want `{"ok":true,...}`. Do not go on until you see it.
@@ -149,7 +149,7 @@ Environment variables, for **Production and Preview both**:
 
 | Variable | Value |
 | --- | --- |
-| `VITE_API_URL` | `https://api.invoice.jurasolutions.com` |
+| `VITE_API_URL` | `https://api.invoice.jurasolutions.sg` |
 | `NODE_VERSION` | `20` |
 
 `VITE_API_URL` is baked into the bundle at build time, so it is public. That is fine — it
@@ -160,13 +160,13 @@ No database credential goes anywhere near Pages. The frontend only ever talks to
 ## 7. Cloudflare Pages — the domain
 
 Pages project → **Custom domains → Set up a custom domain** →
-`invoice-system.jurasolutions.com`.
+`invoice-system.jurasolutions.sg`.
 
 The zone is in the same account, so Cloudflare adds the DNS record itself.
 
 ## 8. Sign in and finish the setup
 
-Open **https://invoice-system.jurasolutions.com** and sign in as the user from step 2.
+Open **https://invoice-system.jurasolutions.sg** and sign in as the user from step 2.
 
 If there is a warning banner about company details, go to **Settings** and fill in:
 
@@ -180,8 +180,8 @@ carrying a placeholder UEN should never reach a client.
 
 ## Checking it actually works
 
-1. `https://api.invoice.jurasolutions.com/__api/health` returns `{"ok":true}`.
-2. `https://api.invoice.jurasolutions.com/__api/documents` returns **401**, not a list. If it
+1. `https://api.invoice.jurasolutions.sg/__api/health` returns `{"ok":true}`.
+2. `https://api.invoice.jurasolutions.sg/__api/documents` returns **401**, not a list. If it
    returns data, stop — the API is open to the internet.
 3. `admin` / `P@ssw0rd` is refused. (It only ever works locally, with no users.)
 4. Sign in on the app. **Then reload.** If it drops you back to the login screen, the
@@ -211,7 +211,7 @@ with. The last one is fixed by step 2, or by setting `ADMIN_PASSWORD_HASH`.
 
 **Signed in, then signed straight back out on reload.**
 The cookie is not being kept. Almost always the API is still on `*.up.railway.app` rather
-than `api.invoice.jurasolutions.com`. Also confirm `ALLOWED_ORIGIN` matches the frontend origin
+than `api.invoice.jurasolutions.sg`. Also confirm `ALLOWED_ORIGIN` matches the frontend origin
 exactly, with no trailing slash.
 
 **"Cannot reach the API at …" on the login screen.**
@@ -248,7 +248,7 @@ and keep both somewhere that is itself backed up.
 
 ```
 Cloudflare Pages                     Railway                        Supabase
-invoice-system.jurasolutions.com     api.invoice.jurasolutions.com  Postgres, schema jura
+invoice-system.jurasolutions.sg     api.invoice.jurasolutions.sg  Postgres, schema jura
   the bundle                           the API, the rules             the records
   VITE_API_URL (public)                DATABASE_URL                   the users (hashes)
   no credentials                       SESSION_SECRET                 the constraints and
