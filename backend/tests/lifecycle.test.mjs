@@ -10,20 +10,15 @@
  * route.
  */
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
-const root = await mkdtemp(join(tmpdir(), "jura-lifecycle-"));
-process.env.JURA_DATA_PATH = join(root, "data/invoices");
-process.env.JURA_OUTPUT_PATH = join(root, "outputs");
+// In-memory Postgres, fresh for every test. Never the real database.
+delete process.env.DATABASE_URL;
+process.env.JURA_PGLITE_PATH = "memory://";
 
 const store = await import("../src/store.mjs");
-const { paths } = await import("../src/paths.mjs");
-const { writeJsonAtomic } = await import("../src/atomic.mjs");
+const { query, resetDatabase, closeDatabase } = await import("../src/db.mjs");
 const { defaultConfig } = await import("@jura/shared/defaults/config.js");
 const { seedTemplates } = await import("@jura/shared/defaults/templates.js");
-const { emptyCounters } = await import("@jura/shared/numbering.js");
 const { computeTotals } = await import("@jura/shared/document.js");
 const { formatMoney } = await import("@jura/shared/money.js");
 
@@ -36,22 +31,21 @@ const CLIENT = {
 };
 
 beforeEach(async () => {
-  await rm(paths.root, { recursive: true, force: true });
-  await store.ensureDataTree();
+  await resetDatabase();
+  await store.ensureDatabase({ log: null });
   const config = defaultConfig();
   config.company.uen = "202612345K";
   config.company.uen_confirmed = true;
   config.company.address_confirmed = true;
-  await writeJsonAtomic(paths.config, config);
-  await writeJsonAtomic(paths.counters, emptyCounters());
-  await writeJsonAtomic(paths.clients, [CLIENT]);
+  await store.writeConfig(config);
+  await store.upsertClient(CLIENT);
   for (const { slug, ...rest } of seedTemplates) {
     await store.saveTemplate({ slug, ...rest });
   }
 });
 
 afterAll(async () => {
-  await rm(root, { recursive: true, force: true });
+  await closeDatabase();
 });
 
 describe("quotation → invoice → payments → receipt", () => {
@@ -153,7 +147,7 @@ describe("quotation → invoice → payments → receipt", () => {
     await expect(store.saveDocument(receipt.id, { sections: [] })).rejects.toThrow(/cannot be changed/);
 
     // Three documents, three sequences, no gaps.
-    const counters = JSON.parse(await readFile(paths.counters, "utf8"));
+    const counters = await store.readCounters();
     expect(counters).toMatchObject({
       quotation: { "2026-08": 1 },
       invoice: { "2026-09": 1 },
@@ -166,8 +160,8 @@ describe("a draft survives being edited and reloaded", () => {
   it("keeps hand-added sections, added items, a reorder and a removal", async () => {
     const templates = await store.listTemplates();
     const template = templates.find((t) => t.slug === "discovery-only");
-    const templateFile = join(paths.templates, "discovery-only.json");
-    const before = await readFile(templateFile, "utf8");
+    const templateRow = () => query("select data from templates where slug = 'discovery-only'");
+    const before = await templateRow();
 
     const doc = await store.createDocument({ type: "invoice", client_id: CLIENT.id, template });
     expect(doc.sections).toHaveLength(1);
@@ -202,7 +196,7 @@ describe("a draft survives being edited and reloaded", () => {
       ),
     });
 
-    // Reload from disk, as a browser refresh would.
+    // Reload from the database, as a browser refresh would.
     const reloaded = await store.readDocument(doc.id);
     expect(reloaded.sections[0].title).toBe("Added by hand");
     expect(reloaded.sections[0].items.map((i) => i.id)).toEqual(["itm_b"]);
@@ -210,8 +204,8 @@ describe("a draft survives being edited and reloaded", () => {
     expect(reloaded.sections[1].title).toBe("Discovery");
     expect(computeTotals(reloaded).subtotal_cents).toBe(50000); // 2 × 250.00
 
-    // And the template it came from is untouched, byte for byte.
-    expect(await readFile(templateFile, "utf8")).toBe(before);
+    // And the template it came from is untouched.
+    expect(await templateRow()).toEqual(before);
   });
 
   it("saves a template from a document without carrying the client across", async () => {
@@ -244,7 +238,7 @@ describe("a draft survives being edited and reloaded", () => {
       })),
     });
 
-    const written = JSON.parse(await readFile(join(paths.templates, "september-retainer.json"), "utf8"));
+    const [{ data: written }] = await query("select data from templates where slug = 'september-retainer'");
     expect(written.sections[0].items[0].unit_price_cents).toBe(200000);
     expect(JSON.stringify(written)).not.toContain("Northbridge");
     expect(saved.slug).toBe("september-retainer");

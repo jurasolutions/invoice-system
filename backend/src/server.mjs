@@ -12,9 +12,10 @@
 import { createServer } from "node:http";
 
 import { handleApiRequest } from "./api.mjs";
-import { ensureDataTree } from "./store.mjs";
-import { assertProductionReady, usingDefaultCredentials } from "./auth.mjs";
-import { dataRoot, outputRoot } from "./paths.mjs";
+import { ensureDatabase } from "./store.mjs";
+import { assertProductionReady, ensureAdminUser, usingDefaultCredentials } from "./auth.mjs";
+import { closeDatabase, describeDatabase } from "./db.mjs";
+import { outputRoot } from "./paths.mjs";
 
 const PORT = Number(process.env.PORT ?? 5175);
 const HOST = process.env.HOST ?? "0.0.0.0";
@@ -23,7 +24,11 @@ const HOST = process.env.HOST ?? "0.0.0.0";
 // in this repo. See auth.mjs.
 assertProductionReady();
 
-await ensureDataTree();
+// Migrations, default settings and templates, then the admin user. Nothing
+// is served until the database is ready.
+await ensureDatabase();
+await ensureAdminUser();
+const database = await describeDatabase();
 
 const server = createServer(async (req, res) => {
   try {
@@ -49,7 +54,7 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, HOST, async () => {
   console.log(`\n  jura api     http://${HOST}:${PORT}`);
-  console.log(`  jura data    ${dataRoot}`);
+  console.log(`  jura data    ${database}`);
   console.log(`  jura output  ${outputRoot}`);
   if (await usingDefaultCredentials()) {
     console.log(`\n  Signing in with the default credentials (admin / P@ssw0rd).`);
@@ -63,7 +68,7 @@ server.listen(PORT, HOST, async () => {
 for (const signal of ["SIGTERM", "SIGINT"]) {
   process.on(signal, () => {
     console.log(`\n${signal} — closing`);
-    server.close(() => process.exit(0));
+    server.close(() => closeDatabase().finally(() => process.exit(0)));
     // If a connection will not drain, do not hang the deploy forever.
     setTimeout(() => process.exit(0), 10000).unref();
   });

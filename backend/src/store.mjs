@@ -1,21 +1,23 @@
 /**
- * The store: everything that reads or writes `data/invoices/`.
+ * The store: everything that reads or writes the records.
  *
- * This is the only place that touches the filesystem, and it is where the two
+ * This is the only place that touches the database, and it is where the two
  * rules that make the records worth keeping are actually enforced:
  *
  *   - a number is assigned once, atomically, and never reused
  *   - an issued document's content is frozen
  *
  * The builder enforces both in the UI as well, but the UI is a convenience.
- * If the rule is not held here it is not held at all.
+ * The database enforces both a second time (see migrations/0001), so a mistake
+ * here is refused rather than written.
+ *
+ * Anything that reads and then writes runs in a transaction and locks the row
+ * it read (`for update`), so two requests cannot both read the same version and
+ * each write their own. Inside a transaction every read and write goes through
+ * the `q` it hands out — never the module-level `query`.
  */
-import { readdir, mkdir, rm, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
-
-import { paths } from "./paths.mjs";
-import { readJson, writeJsonAtomic, withLock } from "./atomic.mjs";
-import { emptyCounters, nextNumber, validateCounters, parseNumber } from "@jura/shared/numbering.js";
+import { query, transaction, migrate } from "./db.mjs";
+import { emptyCounters, formatNumber, periodKey, parseNumber } from "@jura/shared/numbering.js";
 import {
   computeTotals,
   frozenFieldsTouched,
@@ -28,7 +30,7 @@ import {
   SCHEMA_VERSION,
 } from "@jura/shared/document.js";
 import { today } from "@jura/shared/dates.js";
-import { isSafeId, slugify, newDocumentId, newPaymentId, newSectionId, newItemId } from "@jura/shared/ids.js";
+import { isSafeId, slugify, newDocumentId, newClientId, newPaymentId, newSectionId, newItemId } from "@jura/shared/ids.js";
 import { defaultConfig } from "@jura/shared/defaults/config.js";
 import { seedTemplates } from "@jura/shared/defaults/templates.js";
 
@@ -41,68 +43,80 @@ export class StoreError extends Error {
   }
 }
 
+const json = (value) => JSON.stringify(value);
+
 // ------------------------------------------------------------------- config
 
-export async function readConfig() {
-  const config = await readJson(paths.config, null);
-  if (!config) {
-    throw new StoreError(
-      `No config.json at ${paths.config}. Run \`npm run seed\` to create the data tree.`,
-      503
-    );
+export async function readConfig(q = query) {
+  const [row] = await q("select config from settings where id = 1");
+  if (!row) {
+    throw new StoreError("No company settings in the database. Restart the API — it writes the default on boot.", 503);
   }
-  return config;
+  return row.config;
 }
 
 export async function writeConfig(config) {
-  return writeJsonAtomic(paths.config, config);
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new StoreError("Settings must be an object.", 400);
+  }
+  await query(
+    `insert into settings (id, config) values (1, $1::jsonb)
+     on conflict (id) do update set config = excluded.config, updated_at = now()`,
+    [json(config)]
+  );
+  return config;
 }
 
 // ------------------------------------------------------------------ clients
 
 export async function readClients() {
-  return readJson(paths.clients, []);
+  const rows = await query("select data from clients order by created_at, id");
+  return rows.map((row) => row.data);
+}
+
+async function readClient(id, q = query) {
+  const [row] = await q("select data from clients where id = $1", [id]);
+  return row?.data ?? null;
 }
 
 export async function upsertClient(client) {
-  const clients = await readClients();
-  const index = clients.findIndex((c) => c.id === client.id);
-  const record = { ...client, updated_at: new Date().toISOString() };
-  if (index === -1) clients.push({ ...record, created_at: record.updated_at });
-  else clients[index] = { ...clients[index], ...record };
-  await writeJsonAtomic(paths.clients, clients);
-  return record;
+  const id = client?.id ?? newClientId();
+  if (!isSafeId(id)) throw new StoreError(`Bad client id: ${id}`, 400);
+  return transaction(async (q) => {
+    const [existing] = await q("select data from clients where id = $1 for update", [id]);
+    const record = { ...client, id, updated_at: new Date().toISOString() };
+    const data = existing ? { ...existing.data, ...record } : { ...record, created_at: record.updated_at };
+    await writeClientRow(data, q);
+    return record;
+  });
+}
+
+/** Exported for the seed and the JSON migration, which write clients as they are. */
+export async function writeClientRow(client, q = query) {
+  await q(
+    `insert into clients (id, data, created_at) values ($1, $2::jsonb, coalesce($3::timestamptz, now()))
+     on conflict (id) do update set data = excluded.data, updated_at = now()`,
+    [client.id, json(client), client.created_at ?? null]
+  );
 }
 
 export async function deleteClient(id) {
-  const clients = await readClients();
-  const remaining = clients.filter((c) => c.id !== id);
-  if (remaining.length === clients.length) throw new StoreError(`No client ${id}`, 404);
-  await writeJsonAtomic(paths.clients, remaining);
+  const rows = await query("delete from clients where id = $1 returning id", [id]);
+  if (rows.length === 0) throw new StoreError(`No client ${id}`, 404);
 }
 
 // ---------------------------------------------------------------- templates
 
 export async function listTemplates() {
-  let files;
-  try {
-    files = await readdir(paths.templates);
-  } catch (error) {
-    if (error.code === "ENOENT") return [];
-    throw error;
-  }
-  const templates = [];
-  for (const file of files.filter((f) => f.endsWith(".json"))) {
-    const template = await readJson(join(paths.templates, file), null);
-    if (template) templates.push({ ...template, slug: file.replace(/\.json$/, "") });
-  }
-  return templates.sort((a, b) => (a.order ?? 99) - (b.order ?? 99) || a.name.localeCompare(b.name));
+  const rows = await query("select slug, data from templates");
+  return rows
+    .map((row) => ({ ...row.data, slug: row.slug }))
+    .sort((a, b) => (a.order ?? 99) - (b.order ?? 99) || a.name.localeCompare(b.name));
 }
 
 export async function saveTemplate(template) {
   const slug = slugify(template.slug || template.name);
   if (!isSafeId(slug)) throw new StoreError(`Bad template name: ${template.name}`, 400);
-  const path = join(paths.templates, `${slug}.json`);
   const record = {
     name: template.name,
     description: template.description ?? "",
@@ -115,44 +129,48 @@ export async function saveTemplate(template) {
     order: template.order ?? 50,
     updated_at: new Date().toISOString(),
   };
-  await writeJsonAtomic(path, record);
+  await writeTemplateRow(slug, record);
   return { ...record, slug };
+}
+
+/** Exported for the seed and the JSON migration, which write templates as they are. */
+export async function writeTemplateRow(slug, record, q = query) {
+  await q(
+    `insert into templates (slug, name, sort_order, data) values ($1, $2, $3, $4::jsonb)
+     on conflict (slug) do update
+       set name = excluded.name, sort_order = excluded.sort_order, data = excluded.data, updated_at = now()`,
+    [slug, record.name ?? slug, Number.isSafeInteger(record.order) ? record.order : 50, json(record)]
+  );
 }
 
 export async function deleteTemplate(slug) {
   if (!isSafeId(slug)) throw new StoreError(`Bad template slug: ${slug}`, 400);
-  await rm(join(paths.templates, `${slug}.json`), { force: true });
+  await query("delete from templates where slug = $1", [slug]);
 }
 
 // ---------------------------------------------------------------- documents
 
-function documentPath(id) {
+function checkId(id) {
   if (!isSafeId(id)) throw new StoreError(`Bad document id: ${id}`, 400);
-  const path = resolve(paths.documents, `${id}.json`);
-  // Belt and braces against a crafted id climbing out of the documents folder.
-  if (!path.startsWith(resolve(paths.documents))) throw new StoreError(`Bad document id: ${id}`, 400);
-  return path;
+  return id;
 }
 
-export async function readDocument(id) {
-  const doc = await readJson(documentPath(id), null);
-  if (!doc) throw new StoreError(`No document ${id}`, 404);
-  return doc;
+export async function readDocument(id, q = query) {
+  const [row] = await q("select data from documents where id = $1", [checkId(id)]);
+  if (!row) throw new StoreError(`No document ${id}`, 404);
+  return row.data;
+}
+
+/** Read a document and hold its row until the transaction ends. */
+async function lockDocument(q, id) {
+  const [row] = await q("select data from documents where id = $1 for update", [checkId(id)]);
+  if (!row) throw new StoreError(`No document ${id}`, 404);
+  return row.data;
 }
 
 export async function listDocuments() {
-  let files;
-  try {
-    files = await readdir(paths.documents);
-  } catch (error) {
-    if (error.code === "ENOENT") return [];
-    throw error;
-  }
-  const summaries = [];
-  for (const file of files.filter((f) => f.endsWith(".json"))) {
-    const doc = await readJson(join(paths.documents, file), null);
-    if (doc) summaries.push(summarise(doc));
-  }
+  const rows = await query("select data from documents");
+  const summaries = rows.map((row) => summarise(row.data));
   // Newest first: issued documents by number within a period, drafts by when
   // they were last touched.
   return summaries.sort((a, b) => (b.sort_key > a.sort_key ? 1 : b.sort_key < a.sort_key ? -1 : 0));
@@ -186,8 +204,7 @@ export async function createDocument({ type, template, client_id, from }) {
   const doc = blankDocument(type, config);
 
   if (client_id) {
-    const clients = await readClients();
-    const client = clients.find((c) => c.id === client_id);
+    const client = await readClient(client_id);
     if (!client) throw new StoreError(`No client ${client_id}`, 404);
     doc.client_id = client.id;
     doc.client_snapshot = snapshotClient(client);
@@ -210,7 +227,7 @@ export async function createDocument({ type, template, client_id, from }) {
  *
  * Deep-copied with fresh ids on every section and item. A template is a
  * starting point, not a live link: editing the draft afterwards must never
- * write back through to the template file.
+ * write back through to the template.
  */
 export function applyTemplate(doc, template, config) {
   doc.sections = (template.sections ?? []).map((section) => ({
@@ -246,9 +263,22 @@ function addDaysISO(iso, days) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-async function writeDocument(doc) {
-  await mkdir(paths.documents, { recursive: true });
-  return writeJsonAtomic(documentPath(doc.id), doc);
+/**
+ * Write a whole document. Exported for the seed and the JSON migration.
+ *
+ * The number, type and status columns are copies of the document's own fields,
+ * so the database can hold the numbering rules without parsing JSON.
+ */
+export async function writeDocument(doc, q = query) {
+  checkId(doc.id);
+  await q(
+    `insert into documents (id, type, number, status, issued_at, data) values ($1, $2, $3, $4, $5, $6::jsonb)
+     on conflict (id) do update
+       set type = excluded.type, number = excluded.number, status = excluded.status,
+           issued_at = excluded.issued_at, data = excluded.data, updated_at = now()`,
+    [doc.id, doc.type, doc.number ?? null, doc.status, doc.issued_at ?? null, json(doc)]
+  );
+  return doc;
 }
 
 /**
@@ -259,38 +289,40 @@ async function writeDocument(doc) {
  * refused, by name, so the caller knows exactly what it tried to change.
  */
 export async function saveDocument(id, incoming) {
-  const existing = await readDocument(id);
+  return transaction(async (q) => {
+    const existing = await lockDocument(q, id);
 
-  if (isIssued(existing)) {
-    const frozen = frozenFieldsTouched(existing, { ...existing, ...incoming });
-    if (frozen.length > 0) {
-      throw new StoreError(
-        `${existing.number} has been issued, so its content cannot be changed. ` +
-          `Refused changes to: ${frozen.join(", ")}. Raise a credit note instead.`,
-        409,
-        { frozen }
-      );
+    if (isIssued(existing)) {
+      const frozen = frozenFieldsTouched(existing, { ...existing, ...incoming });
+      if (frozen.length > 0) {
+        throw new StoreError(
+          `${existing.number} has been issued, so its content cannot be changed. ` +
+            `Refused changes to: ${frozen.join(", ")}. Raise a credit note instead.`,
+          409,
+          { frozen }
+        );
+      }
+      const merged = {
+        ...existing,
+        ...pick(incoming, [...MUTABLE_AFTER_ISSUE]),
+        updated_at: new Date().toISOString(),
+      };
+      await writeDocument(merged, q);
+      return merged;
     }
+
     const merged = {
       ...existing,
-      ...pick(incoming, [...MUTABLE_AFTER_ISSUE]),
+      ...incoming,
+      id: existing.id,
+      number: existing.number,
+      created_at: existing.created_at,
+      schema_version: SCHEMA_VERSION,
       updated_at: new Date().toISOString(),
     };
-    await writeDocument(merged);
+    await writeDocument(merged, q);
     return merged;
-  }
-
-  const merged = {
-    ...existing,
-    ...incoming,
-    id: existing.id,
-    number: existing.number,
-    created_at: existing.created_at,
-    schema_version: SCHEMA_VERSION,
-    updated_at: new Date().toISOString(),
-  };
-  await writeDocument(merged);
-  return merged;
+  });
 }
 
 function pick(source, keys) {
@@ -298,35 +330,25 @@ function pick(source, keys) {
 }
 
 export async function deleteDocument(id) {
-  const doc = await readDocument(id);
-  if (isIssued(doc)) {
-    throw new StoreError(
-      `${doc.number} has been issued and cannot be deleted. Void it instead — the number stays in the sequence.`,
-      409
-    );
-  }
-  await rm(documentPath(id), { force: true });
+  await transaction(async (q) => {
+    const doc = await lockDocument(q, id);
+    if (doc.number) {
+      throw new StoreError(
+        `${doc.number} has been issued and cannot be deleted. Void it instead — the number stays in the sequence.`,
+        409
+      );
+    }
+    await q("delete from documents where id = $1", [id]);
+  });
 }
 
 // ----------------------------------------------------------------- numbering
 
-export async function readCounters() {
-  const counters = await readJson(paths.counters, null);
-  if (!counters) {
-    throw new StoreError(
-      `No counters.json at ${paths.counters}. Run \`npm run seed\`. Refusing to issue without one — ` +
-        "starting a fresh sequence over an existing one would produce duplicate numbers.",
-      503
-    );
-  }
-  const problems = validateCounters(counters);
-  if (problems.length > 0) {
-    throw new StoreError(
-      `counters.json is not usable and no number has been assigned: ${problems.join("; ")}. ` +
-        "Fix the file by hand — the next number must continue the existing sequence, not restart it.",
-      500,
-      { problems }
-    );
+/** Every counter, in the shape `{ invoice: { "2026-09": 3 }, quotation: {}, ... }`. */
+export async function readCounters(q = query) {
+  const counters = emptyCounters();
+  for (const row of await q("select doc_type, period, seq from counters order by doc_type, period")) {
+    counters[row.doc_type][row.period] = row.seq;
   }
   return counters;
 }
@@ -334,47 +356,63 @@ export async function readCounters() {
 /**
  * Issue a document: assign its number and lock its content.
  *
- * The whole thing runs inside the counter lock, and the counter is written
- * before the document. If the process dies between the two writes the counter
- * has advanced but no document claims that number — a gap, which is visible
- * and explicable. The other order would produce two documents with the same
- * number, which is neither.
+ * One transaction: lock the document, take the next number with a single
+ * upsert on the counter row, write the document. Two concurrent issues queue on
+ * the counter row, so they cannot get the same number; and because the counter
+ * moves in the same transaction as the document, a failure anywhere rolls both
+ * back — no duplicate, and no gap either.
  */
 export async function issueDocument(id, { issued_at } = {}) {
-  const config = await readConfig();
+  try {
+    return await transaction(async (q) => {
+      const config = await readConfig(q);
+      const doc = await lockDocument(q, id);
+      if (doc.number) throw new StoreError(`Already issued as ${doc.number}.`, 409);
 
-  return withLock(paths.countersLock, async () => {
-    const doc = await readDocument(id);
-    if (doc.number) throw new StoreError(`Already issued as ${doc.number}.`, 409);
+      if (issued_at) doc.issued_at = issued_at;
 
-    if (issued_at) doc.issued_at = issued_at;
+      const problems = validateForIssue(doc, config);
+      if (problems.length > 0) {
+        throw new StoreError(`This document is not ready to issue: ${problems.join(" ")}`, 422, { problems });
+      }
 
-    const problems = validateForIssue(doc, config);
-    if (problems.length > 0) {
-      throw new StoreError(`This document is not ready to issue: ${problems.join(" ")}`, 422, { problems });
+      const period = periodKey(doc.issued_at);
+      const [{ seq }] = await q(
+        `insert into counters (doc_type, period, seq) values ($1, $2, 1)
+         on conflict (doc_type, period) do update set seq = counters.seq + 1
+         returning seq`,
+        [doc.type, period]
+      );
+
+      const issued = {
+        ...doc,
+        number: formatNumber(doc.type, period, seq),
+        status: "issued",
+        issued_at: doc.issued_at,
+        company_snapshot: snapshotCompany(config),
+        updated_at: new Date().toISOString(),
+      };
+      await writeDocument(issued, q);
+
+      // A receipt or credit note points back at the document it settles or
+      // corrects; write the return link now that both have numbers.
+      await backlink(issued, q);
+
+      return issued;
+    });
+  } catch (error) {
+    // The counter is behind the documents — edited by hand, or restored
+    // without them. The unique constraint refused the duplicate and the
+    // transaction took the counter back with it.
+    if (error.code === "23505" && /number/.test(error.constraint ?? error.message ?? "")) {
+      throw new StoreError(
+        "The next number is already taken by another document, so nothing was issued. " +
+          "The counter is behind the documents; set it to the highest number in use for that month.",
+        409
+      );
     }
-
-    const counters = await readCounters();
-    const assigned = nextNumber(counters, doc.type, doc.issued_at);
-
-    await writeJsonAtomic(paths.counters, assigned.counters);
-
-    const issued = {
-      ...doc,
-      number: assigned.number,
-      status: "issued",
-      issued_at: doc.issued_at,
-      company_snapshot: snapshotCompany(config),
-      updated_at: new Date().toISOString(),
-    };
-    await writeDocument(issued);
-
-    // A receipt or credit note points back at the document it settles or
-    // corrects; write the return link now that both have numbers.
-    await backlink(issued);
-
-    return issued;
-  });
+    throw error;
+  }
 }
 
 /**
@@ -397,15 +435,12 @@ function snapshotCompany(config) {
   };
 }
 
-async function backlink(doc) {
+async function backlink(doc, q) {
   const targetId = doc.links?.invoice_id ?? doc.links?.corrects_id ?? null;
-  if (!targetId || targetId === doc.id) return;
-  let target;
-  try {
-    target = await readDocument(targetId);
-  } catch {
-    return;
-  }
+  if (!targetId || targetId === doc.id || !isSafeId(targetId)) return;
+  const [row] = await q("select data from documents where id = $1 for update", [targetId]);
+  if (!row) return;
+  const target = row.data;
   const links = { ...(target.links ?? {}) };
   if (doc.type === "receipt") {
     links.receipt_ids = [...new Set([...(links.receipt_ids ?? []), doc.id])];
@@ -414,25 +449,27 @@ async function backlink(doc) {
   } else if (doc.type === "invoice") {
     links.invoice_id = doc.id;
   }
-  await writeDocument({ ...target, links, updated_at: new Date().toISOString() });
+  await writeDocument({ ...target, links, updated_at: new Date().toISOString() }, q);
 }
 
 // ------------------------------------------------------------------ lifecycle
 
 export async function setStatus(id, next, { reason } = {}) {
-  const doc = await readDocument(id);
-  if (!canTransition(doc, next)) {
-    throw new StoreError(`A ${doc.type} that is ${doc.status} cannot become ${next}.`, 409);
-  }
-  const stamps = {
-    sent: { sent_at: today() },
-    paid: { paid_at: today() },
-    accepted: { accepted_at: today() },
-    void: { voided_at: today(), void_reason: reason ?? "" },
-  };
-  const updated = { ...doc, status: next, ...(stamps[next] ?? {}), updated_at: new Date().toISOString() };
-  await writeDocument(updated);
-  return updated;
+  return transaction(async (q) => {
+    const doc = await lockDocument(q, id);
+    if (!canTransition(doc, next)) {
+      throw new StoreError(`A ${doc.type} that is ${doc.status} cannot become ${next}.`, 409);
+    }
+    const stamps = {
+      sent: { sent_at: today() },
+      paid: { paid_at: today() },
+      accepted: { accepted_at: today() },
+      void: { voided_at: today(), void_reason: reason ?? "" },
+    };
+    const updated = { ...doc, status: next, ...(stamps[next] ?? {}), updated_at: new Date().toISOString() };
+    await writeDocument(updated, q);
+    return updated;
+  });
 }
 
 /**
@@ -443,55 +480,59 @@ export async function setStatus(id, next, { reason } = {}) {
  * not part of that content.
  */
 export async function recordPayment(id, payment) {
-  const doc = await readDocument(id);
-  if (doc.type !== "invoice") throw new StoreError("Payments are recorded against invoices.", 400);
-  if (!doc.number) throw new StoreError("Issue the invoice before recording a payment against it.", 409);
-  if (doc.status === "void") throw new StoreError(`${doc.number} is void.`, 409);
+  return transaction(async (q) => {
+    const doc = await lockDocument(q, id);
+    if (doc.type !== "invoice") throw new StoreError("Payments are recorded against invoices.", 400);
+    if (!doc.number) throw new StoreError("Issue the invoice before recording a payment against it.", 409);
+    if (doc.status === "void") throw new StoreError(`${doc.number} is void.`, 409);
 
-  const record = {
-    id: payment.id ?? newPaymentId(),
-    date: payment.date ?? today(),
-    method: payment.method ?? "Bank transfer",
-    reference: payment.reference ?? doc.number,
-    applied_to: payment.applied_to ?? "Balance",
-    amount_cents: payment.amount_cents ?? 0,
-    note: payment.note ?? "",
-  };
-  if (!Number.isSafeInteger(record.amount_cents) || record.amount_cents === 0) {
-    throw new StoreError("A payment needs a non-zero amount in whole cents.", 400);
-  }
+    const record = {
+      id: payment.id ?? newPaymentId(),
+      date: payment.date ?? today(),
+      method: payment.method ?? "Bank transfer",
+      reference: payment.reference ?? doc.number,
+      applied_to: payment.applied_to ?? "Balance",
+      amount_cents: payment.amount_cents ?? 0,
+      note: payment.note ?? "",
+    };
+    if (!Number.isSafeInteger(record.amount_cents) || record.amount_cents === 0) {
+      throw new StoreError("A payment needs a non-zero amount in whole cents.", 400);
+    }
 
-  const payments = [...(doc.payments ?? []), record].sort((a, b) => a.date.localeCompare(b.date));
-  const updated = { ...doc, payments, updated_at: new Date().toISOString() };
+    const payments = [...(doc.payments ?? []), record].sort((a, b) => a.date.localeCompare(b.date));
+    const updated = { ...doc, payments, updated_at: new Date().toISOString() };
 
-  // Mark it paid when the balance clears, so the list does not need a human to
-  // remember. Anything short of the full amount stays as it is; the balance is
-  // shown everywhere it matters.
-  const totals = computeTotals(updated);
-  if (totals.balance_cents === 0 && canTransition(updated, "paid")) {
-    updated.status = "paid";
-    updated.paid_at = record.date;
-  }
+    // Mark it paid when the balance clears, so the list does not need a human to
+    // remember. Anything short of the full amount stays as it is; the balance is
+    // shown everywhere it matters.
+    const totals = computeTotals(updated);
+    if (totals.balance_cents === 0 && canTransition(updated, "paid")) {
+      updated.status = "paid";
+      updated.paid_at = record.date;
+    }
 
-  await writeDocument(updated);
-  return updated;
+    await writeDocument(updated, q);
+    return updated;
+  });
 }
 
 export async function removePayment(id, paymentId) {
-  const doc = await readDocument(id);
-  const payments = (doc.payments ?? []).filter((p) => p.id !== paymentId);
-  if (payments.length === (doc.payments ?? []).length) throw new StoreError(`No payment ${paymentId}`, 404);
-  if ((doc.links?.receipt_ids ?? []).length > 0) {
-    throw new StoreError(
-      "A receipt has already been issued against this invoice, so its payments cannot be removed. " +
-        "Raise a credit note if the amount was wrong.",
-      409
-    );
-  }
-  const status = doc.status === "paid" ? "issued" : doc.status;
-  const updated = { ...doc, payments, status, paid_at: null, updated_at: new Date().toISOString() };
-  await writeDocument(updated);
-  return updated;
+  return transaction(async (q) => {
+    const doc = await lockDocument(q, id);
+    const payments = (doc.payments ?? []).filter((p) => p.id !== paymentId);
+    if (payments.length === (doc.payments ?? []).length) throw new StoreError(`No payment ${paymentId}`, 404);
+    if ((doc.links?.receipt_ids ?? []).length > 0) {
+      throw new StoreError(
+        "A receipt has already been issued against this invoice, so its payments cannot be removed. " +
+          "Raise a credit note if the amount was wrong.",
+        409
+      );
+    }
+    const status = doc.status === "paid" ? "issued" : doc.status;
+    const updated = { ...doc, payments, status, paid_at: null, updated_at: new Date().toISOString() };
+    await writeDocument(updated, q);
+    return updated;
+  });
 }
 
 // ------------------------------------------------------- derived documents
@@ -559,52 +600,54 @@ export async function receiptFromInvoice(invoiceId) {
 
 /** An invoice drafted from an accepted quotation, carrying its sections. */
 export async function invoiceFromQuotation(quotationId) {
-  const config = await readConfig();
-  const quotation = await readDocument(quotationId);
-  if (quotation.type !== "quotation") throw new StoreError("Only a quotation converts to an invoice.", 400);
-  if (!quotation.number) throw new StoreError("Issue the quotation first.", 409);
-  if (quotation.links?.invoice_id) {
-    throw new StoreError(`This quotation has already been converted. See ${quotation.links.invoice_id}.`, 409);
-  }
+  return transaction(async (q) => {
+    const config = await readConfig(q);
+    // Locked, so two clicks on "convert" cannot both see no invoice yet.
+    const quotation = await lockDocument(q, quotationId);
+    if (quotation.type !== "quotation") throw new StoreError("Only a quotation converts to an invoice.", 400);
+    if (!quotation.number) throw new StoreError("Issue the quotation first.", 409);
+    if (quotation.links?.invoice_id) {
+      throw new StoreError(`This quotation has already been converted. See ${quotation.links.invoice_id}.`, 409);
+    }
 
-  const termsDays = config.terms?.payment_days ?? 30;
-  const issued_at = today();
-  const invoice = blankDocument("invoice", config, {
-    client_id: quotation.client_id,
-    client_snapshot: quotation.client_snapshot,
-    currency: quotation.currency,
-    reference: quotation.reference,
-    specimen: Boolean(quotation.specimen),
-    issued_at,
-    terms_days: termsDays,
-    due_date: addDaysISO(issued_at, termsDays),
-    sections: (quotation.sections ?? []).map((section) => ({
-      id: newSectionId(),
-      title: section.title,
-      meta: "",
-      items: (section.items ?? []).map((item) => ({
-        id: newItemId(),
-        description: item.description,
-        note: item.note ?? "",
-        qty: item.qty,
-        unit_price_cents: item.unit_price_cents,
+    const termsDays = config.terms?.payment_days ?? 30;
+    const issued_at = today();
+    const invoice = blankDocument("invoice", config, {
+      client_id: quotation.client_id,
+      client_snapshot: quotation.client_snapshot,
+      currency: quotation.currency,
+      reference: quotation.reference,
+      specimen: Boolean(quotation.specimen),
+      issued_at,
+      terms_days: termsDays,
+      due_date: addDaysISO(issued_at, termsDays),
+      sections: (quotation.sections ?? []).map((section) => ({
+        id: newSectionId(),
+        title: section.title,
+        meta: "",
+        items: (section.items ?? []).map((item) => ({
+          id: newItemId(),
+          description: item.description,
+          note: item.note ?? "",
+          qty: item.qty,
+          unit_price_cents: item.unit_price_cents,
+        })),
       })),
-    })),
-    // The quotation's grant note and acceptance block do not belong on an
-    // invoice — by then the project has commenced.
-    panels: ["how_to_pay", "notes"],
-    links: { quotation_id: quotation.id, invoice_id: null, receipt_ids: [], credit_note_ids: [], corrects_id: null },
-    source_number: quotation.number,
-    gst: { ...quotation.gst },
-  });
+      // The quotation's grant note and acceptance block do not belong on an
+      // invoice — by then the project has commenced.
+      panels: ["how_to_pay", "notes"],
+      links: { quotation_id: quotation.id, invoice_id: null, receipt_ids: [], credit_note_ids: [], corrects_id: null },
+      source_number: quotation.number,
+      gst: { ...quotation.gst },
+    });
 
-  await writeDocument(invoice);
-  await writeDocument({
-    ...quotation,
-    links: { ...(quotation.links ?? {}), invoice_id: invoice.id },
-    updated_at: new Date().toISOString(),
+    await writeDocument(invoice, q);
+    await writeDocument(
+      { ...quotation, links: { ...(quotation.links ?? {}), invoice_id: invoice.id }, updated_at: new Date().toISOString() },
+      q
+    );
+    return invoice;
   });
-  return invoice;
 }
 
 /** A credit note against an issued document — the only way to correct one. */
@@ -646,54 +689,44 @@ export async function creditNoteFrom(documentId, { reason } = {}) {
 
 export async function findByNumber(number) {
   if (!parseNumber(number)) throw new StoreError(`"${number}" is not a Jura document number.`, 400);
-  const summaries = await listDocuments();
-  const match = summaries.find((s) => s.number === number);
-  if (!match) throw new StoreError(`No document numbered ${number}.`, 404);
-  return readDocument(match.id);
+  const [row] = await query("select data from documents where number = $1", [number]);
+  if (!row) throw new StoreError(`No document numbered ${number}.`, 404);
+  return row.data;
 }
+
+// -------------------------------------------------------------------- boot
 
 /**
- * Make sure there is a data tree to work with.
+ * Make sure the database is ready. Called on every boot.
  *
- * Called on every boot. Nothing here overwrites anything — an existing
- * `counters.json` in particular is left strictly alone, because resetting one
- * hands out invoice numbers that have already been used.
+ * Runs any pending migrations, then fills in what an empty database needs to
+ * be usable. Nothing here overwrites anything, and the counters are never
+ * touched — an empty counter table over existing documents would try to hand
+ * out numbers already in use (and the unique constraint would refuse them).
  *
- * The config and the templates are created when absent, which matters on a
- * hosted deployment: the first boot lands on an empty volume with no shell to
- * run `npm run seed` from, and without a config every request answers 503 with
- * no way to fix it. The config it writes is the shipped default, whose company
- * details are placeholders that block issuing until they are filled in — so a
- * silently-created config cannot produce a document.
+ * The settings are written when absent because a hosted first boot has no
+ * shell to seed from, and without them every request answers 503. The shipped
+ * default has placeholder company details that block issuing, so settings
+ * created this way cannot produce a document.
  */
-export async function ensureDataTree() {
-  await mkdir(paths.documents, { recursive: true });
-  await mkdir(paths.templates, { recursive: true });
-  await mkdir(paths.outputs, { recursive: true });
-  if (!(await exists(paths.counters))) await writeJsonAtomic(paths.counters, emptyCounters());
-  if (!(await exists(paths.clients))) await writeJsonAtomic(paths.clients, []);
+export async function ensureDatabase({ log = console.log } = {}) {
+  await migrate({ log });
 
-  if (!(await exists(paths.config))) {
-    await writeJsonAtomic(paths.config, defaultConfig());
-    console.log(`[jura] no config.json at ${paths.config} - wrote the default.`);
-    console.log("[jura] Company and payment details are placeholders; issuing is blocked until they are set.");
+  const [created] = await query(
+    "insert into settings (id, config) values (1, $1::jsonb) on conflict (id) do nothing returning id",
+    [json(defaultConfig())]
+  );
+  if (created) {
+    log?.("[jura] no settings in the database - wrote the default.");
+    log?.("[jura] Company and payment details are placeholders; issuing is blocked until they are set.");
   }
 
-  const templates = await readdir(paths.templates).catch(() => []);
-  if (templates.filter((f) => f.endsWith(".json")).length === 0) {
+  const [{ count }] = await query("select count(*)::int as count from templates");
+  if (count === 0) {
     for (const { slug, ...rest } of seedTemplates) {
-      await writeJsonAtomic(join(paths.templates, `${slug}.json`), { ...rest, updated_at: new Date().toISOString() });
+      await writeTemplateRow(slug, { ...rest, updated_at: new Date().toISOString() });
     }
-    console.log(`[jura] no templates - wrote the ${seedTemplates.length} that ship with the app.`);
-  }
-}
-
-async function exists(path) {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
+    log?.(`[jura] no templates - wrote the ${seedTemplates.length} that ship with the app.`);
   }
 }
 

@@ -18,9 +18,9 @@
  *   and only then: the right password works, and the session it gives reaches
  *   the data
  *
- * It runs against a temporary data tree on a spare port and touches nothing.
+ * It runs against an in-memory database on a spare port and touches nothing.
  */
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -32,13 +32,11 @@ const root = await mkdtemp(join(tmpdir(), "jura-auth-"));
 const PORT = 5199;
 const BASE = `http://127.0.0.1:${PORT}/__api`;
 
-// A config, so that a signed-in request has something to succeed at. Without
-// one the data routes answer 503 and the interesting assertion — that a valid
-// session actually reaches the data — cannot be made.
-const dataRoot = join(root, "data/invoices");
-await mkdir(dataRoot, { recursive: true });
-const { defaultConfig } = await import("@jura/shared/defaults/config.js");
-await writeFile(join(dataRoot, "config.json"), JSON.stringify(defaultConfig(), null, 2), "utf8");
+// The server writes default settings into its fresh in-memory database on
+// boot, so a signed-in request has something to succeed at.
+const serverEnv = { ...process.env };
+delete serverEnv.DATABASE_URL;
+delete serverEnv.ADMIN_PASSWORD_HASH;
 
 const failures = [];
 const check = (name, condition, detail = "") => {
@@ -52,11 +50,11 @@ const check = (name, condition, detail = "") => {
 const server = spawn(process.execPath, ["backend/src/server.mjs"], {
   cwd: repoRoot,
   env: {
-    ...process.env,
+    ...serverEnv,
     PORT: String(PORT),
     HOST: "127.0.0.1",
     NODE_ENV: "development",
-    JURA_DATA_PATH: dataRoot,
+    JURA_PGLITE_PATH: "memory://",
     JURA_OUTPUT_PATH: join(root, "outputs"),
     // Fixed, so a token can be forged in this test and correctly rejected.
     SESSION_SECRET: "check-auth-secret",

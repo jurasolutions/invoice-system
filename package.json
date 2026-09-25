@@ -23,9 +23,14 @@
     "export": "node tools/export-pdf.mjs",
     "verify": "node tools/verify-pdf.mjs",
     "check:layout": "node tools/check-layout.mjs",
-    "check:auth": "node tools/check-auth.mjs"
+    "check:auth": "node tools/check-auth.mjs",
+    "migrate": "npm run migrate -w @jura/backend --",
+    "migrate:json": "npm run migrate:json -w @jura/backend --",
+    "create-admin": "node backend/scripts/create-admin.mjs",
+    "check:postgres": "node tools/check-postgres.mjs"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "puppeteer-core": "^23.11.1",
     "vite": "^6.0.7",
     "vitest": "^2.1.8"

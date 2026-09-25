@@ -13,15 +13,27 @@
 import * as store from "./store.mjs";
 import { paths } from "./paths.mjs";
 import { StoreError } from "./store.mjs";
+import { describeDatabase } from "./db.mjs";
 import {
   authenticate,
   clearedCookie,
   createSession,
   sessionCookie,
   sessionFromRequest,
-  username,
   usingDefaultCredentials,
 } from "./auth.mjs";
+
+/**
+ * Postgres errors that mean "the database refused this", not "the server broke".
+ * The store checks every rule before writing; these are the second line — a
+ * trigger or constraint catching something the store let through.
+ */
+const DATABASE_REFUSALS = {
+  P0001: 409, // raised by a trigger: an issued document is frozen
+  23505: 409, // unique: a number already in use
+  23514: 422, // check constraint
+  23502: 422, // not null
+};
 
 const PREFIX = "/__api/";
 
@@ -61,7 +73,8 @@ export async function handleApiRequest(req, res) {
     const result = await dispatch(route, method, body, url, { req, res, session });
     send(res, 200, result);
   } catch (error) {
-    const status = error instanceof StoreError || error instanceof AuthError ? error.status : 500;
+    const status =
+      error instanceof StoreError || error instanceof AuthError ? error.status : DATABASE_REFUSALS[error.code] ?? 500;
     if (status >= 500) console.error(`[jura-api] ${method} ${route}:`, error);
     send(res, status, {
       error: error.message,
@@ -112,15 +125,15 @@ async function dispatch(route, method, body, url, ctx) {
 
   if (parts[0] === "auth") {
     if (parts[1] === "login" && method === "POST") {
-      const ok = await authenticate(body?.username, body?.password);
-      if (!ok) {
+      const user = await authenticate(body?.username, body?.password);
+      if (!user) {
         // Deliberately vague: saying which half was wrong tells an attacker
         // whether the username exists.
         throw new AuthError("That username and password do not match.");
       }
-      const token = createSession(username());
+      const token = createSession(user);
       ctx.res.setHeader("Set-Cookie", sessionCookie(token));
-      return { user: username(), token, using_default_credentials: await usingDefaultCredentials() };
+      return { user, token, using_default_credentials: await usingDefaultCredentials() };
     }
 
     if (parts[1] === "logout" && method === "POST") {
@@ -146,7 +159,7 @@ async function dispatch(route, method, body, url, ctx) {
       store.listTemplates(),
       store.listDocuments(),
     ]);
-    return { config, clients, templates, documents, paths: { data: paths.root, outputs: paths.outputs } };
+    return { config, clients, templates, documents, paths: { data: await describeDatabase(), outputs: paths.outputs } };
   }
 
   if (parts[0] === "config") {

@@ -1,26 +1,26 @@
 /**
  * Authentication.
  *
- * One user, a password, and a signed token in an HttpOnly cookie. No session
+ * Users live in the `users` table, each with a scrypt hash of their password.
+ * A signed-in user gets a signed token in an HttpOnly cookie. No session
  * store, because there is nothing to store: the token carries the username and
  * an expiry, and an HMAC over both proves the server issued it.
  *
+ * ## Creating the admin
+ *
+ *   npm run create-admin -- admin 'a long passphrase'
+ *
+ * against the database in DATABASE_URL. Or set ADMIN_PASSWORD_HASH (from
+ * `npm run hash-password`) in the environment, and the first boot on an empty
+ * users table creates the admin from it.
+ *
  * ## The default credentials
  *
- * Out of the box this accepts `admin` / `P@ssw0rd`, so the app works the moment
- * you clone it. That default is in this file, which means it is on GitHub, in a
- * public repo. Treat it as public, because it is.
- *
- * That is safe for local development and completely unsafe on the internet, so
- * the server **refuses to start in production** unless `ADMIN_PASSWORD_HASH` is
- * set to something else. There is no way to deploy the default by forgetting to
- * change it — see `assertProductionReady()`.
- *
- * To set a real password:
- *
- *   npm run hash-password -- 'the new password'
- *
- * and put the result in `ADMIN_PASSWORD_HASH` in the Railway environment.
+ * With no users at all, local development accepts `admin` / `P@ssw0rd`, so the
+ * app works the moment you clone it. That default is in this file, which means
+ * it is on GitHub. Treat it as public, because it is. It is never accepted in
+ * production, and the server **refuses to start in production** with no users
+ * — see `ensureAdminUser()`.
  *
  * ## Why scrypt
  *
@@ -30,6 +30,8 @@
  */
 import { randomBytes, scrypt, timingSafeEqual, createHmac } from "node:crypto";
 import { promisify } from "node:util";
+
+import { query } from "./db.mjs";
 
 const scryptAsync = promisify(scrypt);
 
@@ -75,21 +77,74 @@ export async function verifyPassword(password, stored) {
   return timingSafeEqual(derived, expected);
 }
 
-// ------------------------------------------------------------------ config
+// -------------------------------------------------------------------- users
 
-let cachedHash = null;
+let cachedDefaultHash = null;
 
-/** The password hash this server checks against. */
-async function passwordHash() {
-  if (process.env.ADMIN_PASSWORD_HASH) return process.env.ADMIN_PASSWORD_HASH;
-  // Derived rather than embedded, so there is no hash in the repo that could be
-  // mistaken for a real one.
-  cachedHash ??= await hashPassword(DEFAULT_PASSWORD);
-  return cachedHash;
+/**
+ * The development default's hash. Derived rather than embedded, so there is no
+ * hash in the repo that could be mistaken for a real one. Also the decoy for an
+ * unknown username, so every refusal costs the same scrypt.
+ */
+async function defaultHash() {
+  cachedDefaultHash ??= await hashPassword(DEFAULT_PASSWORD);
+  return cachedDefaultHash;
 }
 
+/** The admin's username, for tools that mint their own session. */
 export function username() {
   return process.env.ADMIN_USERNAME || DEFAULT_USERNAME;
+}
+
+export function validUsername(name) {
+  return typeof name === "string" && /^[A-Za-z0-9._@-]{1,80}$/.test(name);
+}
+
+async function countUsers() {
+  const [{ count }] = await query("select count(*)::int as count from users");
+  return count;
+}
+
+/** Create a user, or reset their password if they exist. */
+export async function setUserPassword(name, password) {
+  await setUserPasswordHash(name, await hashPassword(password));
+}
+
+export async function setUserPasswordHash(name, hash) {
+  if (!validUsername(name)) throw new Error(`"${name}" is not a usable username.`);
+  if (!String(hash).startsWith("scrypt$")) throw new Error("That is not a hash from `npm run hash-password`.");
+  await query(
+    `insert into users (username, password_hash) values ($1, $2)
+     on conflict (username) do update set password_hash = excluded.password_hash, updated_at = now()`,
+    [name, hash]
+  );
+}
+
+/**
+ * Called on boot, after the migrations.
+ *
+ * An empty users table plus ADMIN_PASSWORD_HASH creates the admin from it, so
+ * a Railway deploy can be set up entirely from its variables. An empty users
+ * table in production with nothing to create one from refuses to start: there
+ * would be no way in, and the development default must never be the way in.
+ */
+export async function ensureAdminUser() {
+  if ((await countUsers()) > 0) return;
+
+  if (process.env.ADMIN_PASSWORD_HASH) {
+    await setUserPasswordHash(username(), process.env.ADMIN_PASSWORD_HASH);
+    console.log(`[jura] no users - created "${username()}" from ADMIN_PASSWORD_HASH.`);
+    return;
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    console.error(
+      "\nRefusing to start: there are no users, so nobody could sign in.\n\n" +
+        "  Either run `npm run create-admin -- admin 'your password'` against this database,\n" +
+        "  or set ADMIN_PASSWORD_HASH (from `npm run hash-password`) and redeploy.\n"
+    );
+    process.exit(1);
+  }
 }
 
 /**
@@ -114,11 +169,8 @@ export function assertProductionReady() {
   if (process.env.NODE_ENV !== "production") return;
 
   const problems = [];
-  if (!process.env.ADMIN_PASSWORD_HASH) {
-    problems.push(
-      "ADMIN_PASSWORD_HASH is not set, so the server would accept the default password " +
-        "that is published in this repo. Run `npm run hash-password -- 'your password'` and set it."
-    );
+  if (!process.env.DATABASE_URL) {
+    problems.push("DATABASE_URL is not set. The records live in Postgres; set it to the Supabase connection string.");
   }
   if (!process.env.SESSION_SECRET) {
     problems.push(
@@ -163,18 +215,38 @@ export function readSession(token, now = Date.now()) {
   return { user: claims.u, expires_at: claims.exp };
 }
 
-/** Check a username and password. Always does the hash work, so a wrong
- *  username and a wrong password take the same time to reject. */
+/**
+ * Check a username and password. Returns the username, or null.
+ *
+ * Always does the hash work, so an unknown username and a wrong password take
+ * the same time to reject and a caller cannot tell which it was.
+ */
 export async function authenticate(user, password) {
-  const stored = await passwordHash();
-  const passwordOk = await verifyPassword(String(password ?? ""), stored);
-  const userOk = String(user ?? "") === username();
-  return passwordOk && userOk;
+  const name = String(user ?? "");
+  const secret = String(password ?? "");
+
+  if (await usingDefaultCredentials()) {
+    const ok = await verifyPassword(secret, await defaultHash());
+    return ok && name === DEFAULT_USERNAME ? name : null;
+  }
+
+  const [row] = validUsername(name)
+    ? await query("select username, password_hash from users where username = $1", [name])
+    : [];
+  const ok = await verifyPassword(secret, row?.password_hash ?? (await defaultHash()));
+  if (!row || !ok) return null;
+
+  await query("update users set last_login_at = now() where username = $1", [row.username]).catch(() => {});
+  return row.username;
 }
 
-/** True when this server is still running on the published default password. */
+/**
+ * True when there are no users and this is not production, so the published
+ * default password is what lets people in.
+ */
 export async function usingDefaultCredentials() {
-  return !process.env.ADMIN_PASSWORD_HASH;
+  if (process.env.NODE_ENV === "production") return false;
+  return (await countUsers()) === 0;
 }
 
 // ------------------------------------------------------------------ cookies

@@ -1,27 +1,25 @@
 /**
- * The store, against a real temporary data tree.
+ * The store, against a real Postgres.
  *
- * These run against the filesystem on purpose. The rules being tested —
- * atomic counter writes, a lock that refuses rather than guesses, an issued
- * document that will not take an edit — are all rules about what happens on
- * disk, and a mocked filesystem would test the mock.
+ * PGlite — Postgres compiled to WebAssembly, in memory, fresh for every test.
+ * Not a mock: the same migrations, constraints and triggers as Supabase. The
+ * rules being tested — a counter that never repeats, an issued document that
+ * will not take an edit — are rules the database holds as well as the store,
+ * and a mocked database would test the mock.
+ *
+ * Concurrency against a networked Postgres, where transactions genuinely
+ * overlap, is `npm run check:postgres`.
  */
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
-import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
-// paths.mjs reads the environment when it is first imported, so the temp
-// directory has to be set before anything pulls it in.
-const root = await mkdtemp(join(tmpdir(), "jura-store-"));
-process.env.JURA_DATA_PATH = join(root, "data/invoices");
-process.env.JURA_OUTPUT_PATH = join(root, "outputs/invoices");
+// db.mjs picks its driver when it first connects, so this has to be set before
+// anything pulls it in. Never the real database, whatever the shell has set.
+delete process.env.DATABASE_URL;
+process.env.JURA_PGLITE_PATH = "memory://";
 
 const store = await import("../src/store.mjs");
-const { paths } = await import("../src/paths.mjs");
-const { writeJsonAtomic, withLock, LockBusyError } = await import("../src/atomic.mjs");
+const { query, resetDatabase, closeDatabase } = await import("../src/db.mjs");
 const { defaultConfig } = await import("@jura/shared/defaults/config.js");
-const { emptyCounters } = await import("@jura/shared/numbering.js");
 const { computeTotals } = await import("@jura/shared/document.js");
 
 const readyConfig = () => {
@@ -41,12 +39,11 @@ const CLIENT = {
   email: "accounts@northbridgedental.example",
 };
 
-async function freshTree({ config = readyConfig(), counters = emptyCounters() } = {}) {
-  await rm(paths.root, { recursive: true, force: true });
-  await store.ensureDataTree();
-  await writeJsonAtomic(paths.config, config);
-  await writeJsonAtomic(paths.counters, counters);
-  await writeJsonAtomic(paths.clients, [CLIENT]);
+async function freshDatabase({ config = readyConfig() } = {}) {
+  await resetDatabase();
+  await store.ensureDatabase({ log: null });
+  await store.writeConfig(config);
+  await store.upsertClient(CLIENT);
 }
 
 /** A draft that is complete enough to issue. */
@@ -73,11 +70,11 @@ async function readyDraft(overrides = {}) {
 }
 
 beforeEach(async () => {
-  await freshTree();
+  await freshDatabase();
 });
 
 afterAll(async () => {
-  await rm(root, { recursive: true, force: true });
+  await closeDatabase();
 });
 
 describe("issuing assigns a number", () => {
@@ -89,7 +86,7 @@ describe("issuing assigns a number", () => {
     expect(issued.number).toBe("JURA-2026-09-001");
     expect(issued.status).toBe("issued");
 
-    const counters = JSON.parse(await readFile(paths.counters, "utf8"));
+    const counters = await store.readCounters();
     expect(counters.invoice["2026-09"]).toBe(1);
   });
 
@@ -127,7 +124,7 @@ describe("issuing assigns a number", () => {
       "JURA-2026-09-005",
     ]);
 
-    const counters = JSON.parse(await readFile(paths.counters, "utf8"));
+    const counters = await store.readCounters();
     expect(counters.invoice["2026-09"]).toBe(5);
   });
 
@@ -137,7 +134,7 @@ describe("issuing assigns a number", () => {
     const issued = await store.issueDocument(october.id);
     expect(issued.number).toBe("JURA-2026-10-001");
 
-    const counters = JSON.parse(await readFile(paths.counters, "utf8"));
+    const counters = await store.readCounters();
     expect(counters.invoice).toEqual({ "2026-09": 1, "2026-10": 1 });
   });
 
@@ -145,53 +142,109 @@ describe("issuing assigns a number", () => {
     const doc = await store.createDocument({ type: "invoice" });
     await expect(store.issueDocument(doc.id)).rejects.toThrow(/not ready to issue/);
 
-    const counters = JSON.parse(await readFile(paths.counters, "utf8"));
+    const counters = await store.readCounters();
     expect(counters.invoice).toEqual({});
   });
 });
 
-describe("a corrupted counters file", () => {
-  it("refuses to issue rather than restarting the sequence", async () => {
-    await writeFile(paths.counters, "{ this is not json", "utf8");
-    const draft = await readyDraft();
-    await expect(store.issueDocument(draft.id)).rejects.toThrow(/not valid JSON/);
+describe("twenty issues at once", () => {
+  it("get twenty distinct numbers with no gaps, and the counter agrees", async () => {
+    const drafts = [];
+    for (let i = 0; i < 20; i++) drafts.push(await readyDraft());
+    const issued = await Promise.all(drafts.map((d) => store.issueDocument(d.id)));
+
+    const seqs = issued.map((d) => Number(d.number.slice(-3))).sort((a, b) => a - b);
+    expect(seqs).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+    expect((await store.readCounters()).invoice["2026-09"]).toBe(20);
   });
 
-  it("refuses when a counter is not a whole number", async () => {
-    await writeJsonAtomic(paths.counters, { ...emptyCounters(), invoice: { "2026-09": "seven" } });
+  it("do not give one document two numbers when it is issued twice at once", async () => {
     const draft = await readyDraft();
-    await expect(store.issueDocument(draft.id)).rejects.toThrow(/not a whole number/);
-  });
-
-  it("refuses when the file is missing entirely", async () => {
-    await rm(paths.counters, { force: true });
-    const draft = await readyDraft();
-    await expect(store.issueDocument(draft.id)).rejects.toThrow(/No counters\.json/);
-  });
-
-  it("leaves the number unassigned after a refusal", async () => {
-    await writeJsonAtomic(paths.counters, { ...emptyCounters(), invoice: { "2026-09": -3 } });
-    const draft = await readyDraft();
-    await expect(store.issueDocument(draft.id)).rejects.toThrow();
-    expect((await store.readDocument(draft.id)).number).toBe(null);
+    const results = await Promise.allSettled([store.issueDocument(draft.id), store.issueDocument(draft.id)]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.find((r) => r.status === "rejected").reason.message).toMatch(/Already issued/);
+    expect((await store.readCounters()).invoice["2026-09"]).toBe(1);
   });
 });
 
-describe("the counter lock", () => {
-  // It waits out the full lock timeout before refusing, which is the point —
-  // the common case is two clicks half a second apart, not a crashed process.
-  it("refuses rather than breaking a lock it did not take", async () => {
-    await mkdir(paths.countersLock, { recursive: true });
-    const draft = await readyDraft();
-    await expect(store.issueDocument(draft.id)).rejects.toThrow(LockBusyError);
-    await rm(paths.countersLock, { recursive: true, force: true });
-  }, 15000);
+describe("a counter that is behind the documents", () => {
+  it("refuses to hand out a number already in use, and moves nothing", async () => {
+    const first = await store.issueDocument((await readyDraft()).id);
+    expect(first.number).toBe("JURA-2026-09-001");
 
-  it("serialises work and always releases, even when the work throws", async () => {
-    const lock = join(paths.root, "test.lock");
-    await expect(withLock(lock, async () => { throw new Error("boom"); })).rejects.toThrow("boom");
-    // The lock is free again, so this succeeds rather than timing out.
-    await expect(withLock(lock, async () => "ok")).resolves.toBe("ok");
+    // Someone resets the counter by hand.
+    await query("delete from counters");
+    const draft = await readyDraft();
+    await expect(store.issueDocument(draft.id)).rejects.toThrow(/already taken/);
+
+    // The whole issue rolled back: no number on the draft, counter untouched.
+    expect((await store.readDocument(draft.id)).number).toBe(null);
+    expect((await store.readCounters()).invoice).toEqual({});
+  });
+
+  it("burns no number when an issue fails part way", async () => {
+    await store.issueDocument((await readyDraft()).id);
+    const draft = await readyDraft();
+    // Make the document write fail after the counter has moved.
+    await query("alter table documents add constraint no_more check (number is null or number < 'JURA-2026-09-002')");
+    await expect(store.issueDocument(draft.id)).rejects.toThrow();
+    await query("alter table documents drop constraint no_more");
+
+    expect((await store.readCounters()).invoice["2026-09"]).toBe(1);
+    const next = await store.issueDocument(draft.id);
+    expect(next.number).toBe("JURA-2026-09-002");
+  });
+});
+
+describe("the database holds the rules on its own", () => {
+  // These go around the store, the way a hand-written query in the SQL editor
+  // would. The store refuses all of them first; the database is the backstop.
+  it("refuses an edit to an issued document's content", async () => {
+    const issued = await store.issueDocument((await readyDraft()).id);
+    await expect(
+      query(`update documents set data = jsonb_set(data, '{reference}', '"PO-9999"') where id = $1`, [issued.id])
+    ).rejects.toThrow(/cannot be changed/);
+  });
+
+  it("still lets the record of what happened to it change", async () => {
+    const issued = await store.issueDocument((await readyDraft()).id);
+    await query(
+      `update documents set status = 'sent', data = data || '{"status":"sent","sent_at":"2026-09-07"}' where id = $1`,
+      [issued.id]
+    );
+    expect((await store.readDocument(issued.id)).status).toBe("sent");
+  });
+
+  it("refuses a change of number", async () => {
+    const issued = await store.issueDocument((await readyDraft()).id);
+    await expect(
+      query(
+        `update documents set number = 'JURA-2026-09-999', data = data || '{"number":"JURA-2026-09-999"}' where id = $1`,
+        [issued.id]
+      )
+    ).rejects.toThrow(/number cannot be changed/);
+  });
+
+  it("refuses to delete an issued document", async () => {
+    const issued = await store.issueDocument((await readyDraft()).id);
+    await expect(query("delete from documents where id = $1", [issued.id])).rejects.toThrow(/cannot be deleted/);
+  });
+
+  it("refuses a second document with the same number", async () => {
+    const issued = await store.issueDocument((await readyDraft()).id);
+    const draft = await readyDraft();
+    await expect(
+      query(
+        `update documents set number = $2, status = 'issued',
+           data = data || jsonb_build_object('number', $2::text, 'status', 'issued') where id = $1`,
+        [draft.id, issued.number]
+      )
+    ).rejects.toThrow(/unique/);
+  });
+
+  it("keeps the records out of the public schema", async () => {
+    const rows = await query("select table_name from information_schema.tables where table_schema = 'public'");
+    expect(rows).toEqual([]);
   });
 });
 
@@ -357,7 +410,8 @@ describe("templates", () => {
         { title: "Discovery", meta: "", items: [{ description: "Process mapping workshops", note: "", qty: 2, unit_price_cents: null }] },
       ],
     });
-    const before = await readFile(join(paths.templates, "discovery-only.json"), "utf8");
+    const templateRow = () => query("select data from templates where slug = 'discovery-only'");
+    const before = await templateRow();
 
     const doc = await store.createDocument({ type: "invoice", client_id: CLIENT.id, template });
     expect(doc.sections[0].title).toBe("Discovery");
@@ -374,8 +428,7 @@ describe("templates", () => {
       ],
     });
 
-    const after = await readFile(join(paths.templates, "discovery-only.json"), "utf8");
-    expect(after).toBe(before);
+    expect(await templateRow()).toEqual(before);
   });
 });
 
@@ -405,7 +458,7 @@ describe("lookups", () => {
     await expect(store.findByNumber("not-a-number")).rejects.toThrow(/not a Jura document number/);
   });
 
-  it("refuses an id that tries to climb out of the documents folder", async () => {
+  it("refuses an id that is not a plain id", async () => {
     await expect(store.readDocument("../../config")).rejects.toThrow(/Bad document id/);
   });
 });

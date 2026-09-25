@@ -1,16 +1,31 @@
 # Deploying
 
 Target: **https://invoice-system.jurasolutions.com**, with the API on
-**https://api.jurasolutions.com**.
+**https://api.invoice.jurasolutions.com** and the records in **Supabase Postgres**.
 
-Frontend on Cloudflare Pages, backend on Railway. Roughly half an hour, most of it
-waiting for DNS.
+Frontend on Cloudflare Pages, backend on Railway, database on Supabase. Roughly half an
+hour, most of it waiting for DNS.
 
 ---
 
 ## Read this first
 
 **Two things will bite you if you skip them.**
+
+### Use Supabase's session pooler, not the direct connection
+
+Supabase shows two connection strings. The direct one, `db.<ref>.supabase.co`, has **only
+an IPv6 address**. Railway cannot reach it, and neither can most home connections — the
+API would fail to start with `ENOTFOUND`.
+
+Use **Connect → Session pooler** instead:
+
+```
+postgresql://postgres.<ref>:<password>@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres
+```
+
+Note the username is `postgres.<ref>`, not `postgres`. Paste the password as it is — the
+server parses it without needing it URL-encoded, `@` and `&` included.
 
 ### The API needs its own subdomain on the same domain
 
@@ -21,106 +36,100 @@ The session lives in a cookie. If the app is on `jurasolutions.com` and the API 
 with Chrome and Firefox tightening steadily. Sign-in would work on your laptop in Chrome
 and fail on your phone, which is the worst way to find out.
 
-Put the API on `api.jurasolutions.com` and both halves are the same site. The cookie is
-first-party, nothing blocks it, and it keeps working as browsers get stricter.
-
-### Railway's disk is wiped on every deploy
-
-The records live in JSON files. Railway containers get a fresh filesystem on each deploy,
-so **without a volume, every invoice you have issued disappears the next time you push.**
-
-Attaching a volume (step 3) fixes it. Moving the store to Postgres — see
-`prd/pending/prd-jura-invoicing-hosted-2026-09-06.md` — is the better long-term answer, but
-a volume is genuinely sufficient for one person and one instance.
-
-Do not skip step 3.
+Put the API on `api.invoice.jurasolutions.com` and both halves are the same site.
 
 ---
 
 ## Before you start
 
-- `jurasolutions.com` is a zone in your Cloudflare account. Everything so far has been on
-  `jurasolutions.sg` — if `.com` is a different domain, add it to Cloudflare first and let
-  the nameservers propagate.
+- `jurasolutions.com` is a zone in your Cloudflare account. If it is a different domain
+  from `jurasolutions.sg`, add it to Cloudflare first and let the nameservers propagate.
 - The repo is pushed and Railway/Cloudflare can see it.
-- Pick your real password now:
+- A session secret:
 
 ```bash
-npm run hash-password -- 'a long passphrase you have not used anywhere else'
+npm run hash-password -- 'any 12+ character string'
 ```
 
-Keep the two values it prints. You need them in step 4.
+Keep the `SESSION_SECRET` it prints. (The hash it also prints is only needed if you create
+the admin from Railway's variables rather than with `create-admin`, below.)
 
 ---
 
-## 1. Railway — create the service
+## 1. Supabase — the database
+
+Nothing to click. The tables are created by the migrations in `backend/migrations/`,
+which the API applies on boot. To prepare the database from your machine instead, with
+`DATABASE_URL` in `.env`:
+
+```bash
+node --env-file=.env backend/scripts/migrate.mjs            # create the tables
+node --env-file=.env backend/scripts/migrate.mjs --status   # see what is applied
+```
+
+The tables go in a schema called `jura`, **not `public`**. Supabase publishes `public`
+through its REST API to anyone holding the publishable key, and that key is meant to be
+public. The `jura` schema is not exposed there, the `anon` and `authenticated` roles have
+no grants on it, and row level security is on with no policies. Do not add `jura` to
+**Settings → API → Exposed schemas**.
+
+## 2. Supabase — the admin user
+
+```bash
+node --env-file=.env backend/scripts/create-admin.mjs admin 'a long passphrase'
+```
+
+Run it again with a new password to reset one. Only the scrypt hash is stored.
+
+## 3. Railway — create the service
 
 New Project → **Deploy from GitHub repo** → `jurasolutions/invoice-system`.
 
-`railway.json` in the repo already sets the build command, the start command and a health
-check on `/__api/health`, so there is nothing to configure here. Leave the root directory
-as the repo root — the workspace install needs it.
+`railway.json` sets the build command, the start command and a health check on
+`/__api/health`. Leave the root directory as the repo root — the workspace install needs
+it. Replicas can stay at 1; the database, not the instance, serialises the numbering, so
+more than one is safe too.
 
-The first deploy will fail. That is expected: the server refuses to start in production
-without a password hash. Step 4 fixes it.
-
-## 2. Railway — keep it to one instance
-
-Settings → make sure replicas is **1**.
-
-A volume attaches to a single instance, and two instances writing the same counter file
-would eventually hand out the same invoice number twice.
-
-## 3. Railway — attach a volume
-
-**This is the step that stops your records being deleted.**
-
-Service → **Variables / Settings → Volumes → Add volume**. Mount path:
-
-```
-/data
-```
-
-Everything under it survives deploys and restarts.
+**No volume.** Nothing is kept on Railway's disk.
 
 ## 4. Railway — environment variables
 
 | Variable | Value |
 | --- | --- |
-| `ADMIN_PASSWORD_HASH` | the `scrypt$...` from `npm run hash-password` |
-| `SESSION_SECRET` | the 64-character hex from the same command |
+| `DATABASE_URL` | the Supabase **session pooler** string (see above) |
+| `SESSION_SECRET` | the 64-character hex from `npm run hash-password` |
 | `NODE_ENV` | `production` |
 | `ALLOWED_ORIGIN` | `https://invoice-system.jurasolutions.com` |
-| `JURA_DATA_PATH` | `/data/invoices` |
-| `JURA_OUTPUT_PATH` | `/data/outputs` |
-| `ADMIN_USERNAME` | optional; defaults to `admin` |
+| `ADMIN_PASSWORD_HASH` | optional — only if you skipped step 2; creates `admin` on first boot |
 
 Do not set `PORT` — Railway sets it.
 
 `ALLOWED_ORIGIN` has to be the exact origin, because a browser will not accept a wildcard
 alongside credentials. No trailing slash.
 
-Redeploy. It should come up, and the logs will say it wrote a default config and the five
-templates onto the empty volume.
+Deploy. The logs should show `jura data    Postgres at aws-0-ap-southeast-1.pooler...`.
+If it refuses to start, the log says why: no `DATABASE_URL`, no `SESSION_SECRET`, or no
+users to sign in with.
 
 ## 5. Railway — custom domain
 
-Service → Settings → **Networking → Custom Domain** → `api.jurasolutions.com`.
+Service → Settings → **Networking → Custom Domain** → `api.invoice.jurasolutions.com`.
 
 Railway gives you a CNAME target. In **Cloudflare → jurasolutions.com → DNS**, add:
 
 | Type | Name | Target | Proxy |
 | --- | --- | --- | --- |
-| CNAME | `api` | the target Railway shows | **DNS only (grey cloud)** |
+| CNAME | `api.invoice` | the target Railway shows | **DNS only (grey cloud)** |
 
-Start with the proxy off. Proxied works too, but only with SSL/TLS mode set to **Full
-(strict)** — on Flexible you get a redirect loop, and it is a miserable thing to debug
-while you are also setting up three other things.
+**Keep the proxy off.** `api.invoice.jurasolutions.com` is two levels below the zone, and
+Cloudflare's free Universal SSL certificate only covers one level (`*.jurasolutions.com`).
+Proxied, browsers would get a certificate error. With the proxy off, Railway serves its own
+certificate for the name, which is all it needs.
 
 Wait for Railway to show the domain as active, then check:
 
 ```
-https://api.jurasolutions.com/__api/health
+https://api.invoice.jurasolutions.com/__api/health
 ```
 
 You want `{"ok":true,...}`. Do not go on until you see it.
@@ -140,13 +149,13 @@ Environment variables, for **Production and Preview both**:
 
 | Variable | Value |
 | --- | --- |
-| `VITE_API_URL` | `https://api.jurasolutions.com` |
+| `VITE_API_URL` | `https://api.invoice.jurasolutions.com` |
 | `NODE_VERSION` | `20` |
 
 `VITE_API_URL` is baked into the bundle at build time, so it is public. That is fine — it
-is an address, not a secret. Nothing else about the deployment ends up in the bundle.
+is an address, not a secret. **Changing it later means rebuilding.**
 
-**Changing it later means rebuilding**, not just editing the variable.
+No database credential goes anywhere near Pages. The frontend only ever talks to the API.
 
 ## 7. Cloudflare Pages — the domain
 
@@ -157,10 +166,9 @@ The zone is in the same account, so Cloudflare adds the DNS record itself.
 
 ## 8. Sign in and finish the setup
 
-Open **https://invoice-system.jurasolutions.com**, sign in with `admin` and the password
-you hashed in step 4.
+Open **https://invoice-system.jurasolutions.com** and sign in as the user from step 2.
 
-There will be a warning banner about company details. Go to **Settings** and fill in:
+If there is a warning banner about company details, go to **Settings** and fill in:
 
 - registered name, UEN, registered address — then tick both confirmation boxes
 - bank, account name and number, SWIFT, PayNow UEN — then tick the payment box
@@ -172,76 +180,81 @@ carrying a placeholder UEN should never reach a client.
 
 ## Checking it actually works
 
-1. `https://api.jurasolutions.com/__api/health` returns `{"ok":true}`.
-2. `https://api.jurasolutions.com/__api/documents` returns **401**, not a list. If it
+1. `https://api.invoice.jurasolutions.com/__api/health` returns `{"ok":true}`.
+2. `https://api.invoice.jurasolutions.com/__api/documents` returns **401**, not a list. If it
    returns data, stop — the API is open to the internet.
-3. Sign in on the app. **Then reload.** If it drops you back to the login screen, the
+3. `admin` / `P@ssw0rd` is refused. (It only ever works locally, with no users.)
+4. Sign in on the app. **Then reload.** If it drops you back to the login screen, the
    cookie is not sticking — see the first troubleshooting entry.
-4. Sign in from your phone, on mobile data rather than wifi.
-5. Create a draft invoice, issue it, print it. Then **redeploy the Railway service and
-   check the invoice is still there.** That is the volume doing its job; if the document
-   is gone, `JURA_DATA_PATH` is not pointing inside the mount.
+5. Sign in from your phone, on mobile data rather than wifi.
+6. Create a draft invoice, issue it, print it. Redeploy the Railway service and check it
+   is still there.
+
+`node --env-file=.env tools/check-postgres.mjs` proves the numbering against the real
+database — twenty concurrent issues, a killed connection mid-issue — in a scratch schema
+it drops afterwards. It never touches the `jura` schema.
 
 ---
 
 ## When it does not work
 
+**The service will not start: `ENOTFOUND db.<ref>.supabase.co`.**
+That is the direct, IPv6-only host. Use the session pooler string.
+
+**The service will not start: `tenant/user ... not found`.**
+The pooler needs the username `postgres.<ref>`, and the pooler host for the project's
+region (`aws-0-ap-southeast-1` for Singapore).
+
+**The service will not start: "Refusing to start".**
+The log names what is missing: `DATABASE_URL`, `SESSION_SECRET`, or any user to sign in
+with. The last one is fixed by step 2, or by setting `ADMIN_PASSWORD_HASH`.
+
 **Signed in, then signed straight back out on reload.**
 The cookie is not being kept. Almost always the API is still on `*.up.railway.app` rather
-than `api.jurasolutions.com`, making the cookie third-party. Check step 5. Also confirm
-`ALLOWED_ORIGIN` matches the frontend origin exactly, with no trailing slash.
+than `api.invoice.jurasolutions.com`. Also confirm `ALLOWED_ORIGIN` matches the frontend origin
+exactly, with no trailing slash.
 
 **"Cannot reach the API at …" on the login screen.**
 `VITE_API_URL` is wrong, or was changed without rebuilding. Redeploy the Pages project.
 
 **Everything 401s after signing in.**
-`SESSION_SECRET` is changing between restarts — it is unset, so the server generates a new
-one each boot and every existing session becomes invalid. Set it.
+`SESSION_SECRET` is unset, so the server generates a new one each boot. Set it.
 
-**The service will not start.**
-Check the logs. If it says it is refusing to start, `ADMIN_PASSWORD_HASH` or
-`SESSION_SECRET` is missing. That refusal is deliberate — it is what stops the published
-default password ending up on the public internet.
+**"The next number is already taken by another document".**
+Someone set a counter back by hand. Nothing was issued. Set that month's row in
+`jura.counters` to the highest number already in use.
 
-**Documents vanished after a deploy.**
-The volume is missing, or `JURA_DATA_PATH` points outside the mount. It must be under
-`/data`. Anything already lost is not recoverable.
-
-**A redirect loop on the API domain.**
-Cloudflare proxy is on with SSL/TLS mode Flexible. Set it to Full (strict), or turn the
-proxy off for that record.
+**A certificate error or redirect loop on the API domain.**
+The Cloudflare proxy is on for `api.invoice`. Turn it off (grey cloud) for that record.
 
 ---
 
 ## Backups
 
-The records have to be retainable for five years. A Railway volume is a disk, not a
-backup — check what snapshot support your plan currently offers, and do not assume it is
-enough on its own.
-
-Until the Postgres migration lands, the simplest belt-and-braces is to pull the records
-down periodically:
+The records have to be retainable for five years. Supabase's automatic backups depend on
+the plan — check **Database → Backups** for what yours keeps, and do not assume it is
+enough on its own. Belt and braces, periodically from your machine:
 
 ```bash
-npm run export -- --all      # PDFs, from a machine with the data mounted
+pg_dump "<the session pooler string>" --schema=jura --format=custom --file=jura-YYYY-MM-DD.dump
+npm run export -- --all      # the PDFs, with DATABASE_URL set
 ```
 
-and keep a copy of `data/invoices/` somewhere that is backed up. This is the weakest part
-of the hosted setup as it stands, and it is the main reason
-`prd/pending/prd-jura-invoicing-hosted-2026-09-06.md` exists.
+and keep both somewhere that is itself backed up.
 
 ---
 
 ## What each side ends up holding
 
 ```
-Cloudflare Pages                     Railway
-invoice-system.jurasolutions.com     api.jurasolutions.com
-  the bundle                           the API, the rules, the records
-  VITE_API_URL (public)                ADMIN_PASSWORD_HASH
-  no credentials                       SESSION_SECRET
-  no data                              /data volume
+Cloudflare Pages                     Railway                        Supabase
+invoice-system.jurasolutions.com     api.invoice.jurasolutions.com  Postgres, schema jura
+  the bundle                           the API, the rules             the records
+  VITE_API_URL (public)                DATABASE_URL                   the users (hashes)
+  no credentials                       SESSION_SECRET                 the constraints and
+  no data                              no data on disk                the freeze trigger
 ```
 
 The frontend is a static file a person can read. It holds nothing worth stealing, and
-every route it calls is checked again on the server.
+every route it calls is checked again on the server — and the rules the server enforces
+are enforced a second time by the database.

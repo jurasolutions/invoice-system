@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
 import { handleApiRequest } from "../backend/src/api.mjs";
-import { ensureDataTree } from "../backend/src/store.mjs";
+import { ensureDatabase } from "../backend/src/store.mjs";
 import { createSession, username } from "../backend/src/auth.mjs";
 
 const toolsDir = dirname(fileURLToPath(import.meta.url));
@@ -41,7 +41,7 @@ function inlineApi() {
  * @returns {{ url: string, headers: Record<string,string>, close: () => Promise<void> }}
  */
 export async function startPreview() {
-  await ensureDataTree();
+  await ensureDatabase({ log: null });
 
   const server = await createServer({
     root: frontendRoot,

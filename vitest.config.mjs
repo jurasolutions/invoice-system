@@ -4,8 +4,9 @@ import { defineConfig } from "vitest/config";
  * One test run across the workspace.
  *
  * `shared/tests` covers the pure domain — money, numbering, the document
- * record. `backend/tests` covers the store against a real temporary data tree,
- * because the rules being tested are rules about what happens on disk.
+ * record. `backend/tests` covers the store and auth against in-memory
+ * Postgres (PGlite) with the real migrations, because the rules being tested
+ * are held by the database as well as the code.
  *
  * The frontend has no tests here on purpose: what matters about it is whether
  * a document lands on the page correctly, and that is checked in a real

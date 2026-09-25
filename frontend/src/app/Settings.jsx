@@ -272,8 +272,8 @@ export function Settings() {
             <dd>{data.paths.outputs}</dd>
           </dl>
           <p className="muted" style={{ marginTop: "var(--space-3)" }}>
-            Both live outside this repo. Records and rendered PDFs are kept for at least five years and are never
-            overwritten.
+            Records live in the database, never in this repo. They are kept for at least five years, and an issued
+            document cannot be changed or deleted there either.
           </p>
         </section>
       </div>

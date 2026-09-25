@@ -2,9 +2,9 @@
 
 Quotations, invoices and receipts as A4 PDFs, in the Jura visual language.
 
-A static frontend for Cloudflare Pages, an API for Railway, and a shared domain that both
-import so they cannot disagree about what a document is worth. It runs entirely on one
-machine too, which is how it is developed.
+A static frontend for Cloudflare Pages, an API for Railway, the records in Postgres on
+Supabase, and a shared domain that both halves import so they cannot disagree about what a
+document is worth. It runs entirely on one machine too, which is how it is developed.
 
 Built against `prd/pending/prd-jura-invoicing-2026-09-06.md` and the concept design at
 `outputs/concepts/jura-invoicing-concept-2026-09-06.pdf`. The hosted split follows
@@ -16,26 +16,35 @@ Built against `prd/pending/prd-jura-invoicing-2026-09-06.md` and the concept des
 
 ```bash
 npm install                        # workspace install: shared, backend, frontend
-npm run seed -- --with-specimen    # creates the data tree, plus the concept's documents
+npm run seed -- --with-specimen    # a local database, plus the concept's documents
 npm run dev                        # api on :5175, app on :5174 - open :5174
 ```
 
-Sign in with **`admin` / `P@ssw0rd`**. That default is published in this repo, which is
-exactly why the server refuses to start in production without a real one — see
+Locally, with no `DATABASE_URL`, the records go in **PGlite** — real Postgres compiled to
+WebAssembly, running inside the API process and stored under `jurasolutions/data/invoices-db/`.
+Same migrations, constraints and triggers as Supabase, nothing to install. Set
+`DATABASE_URL` and the same code talks to Supabase instead.
+
+With no users in the database, sign in with **`admin` / `P@ssw0rd`**. That default is
+published in this repo, which is exactly why it is never accepted in production — see
 **Authentication** below.
 
-`npm run seed` on its own creates an empty data tree — config, counters, clients and the
-five templates, with no documents. Use that for a real start. `--with-specimen` adds the
-three documents from the concept design so there is something to look at.
+`npm run seed` on its own creates an empty database — schema, default settings and the five
+templates, with no documents. `--with-specimen` adds the three documents from the concept
+design so there is something to look at.
 
 | Command | Does |
 | --- | --- |
 | `npm run dev` | Both halves, with the frontend proxying `/__api` to the backend |
-| `npm test` | The domain and store tests (87) |
+| `npm test` | The domain, store and auth tests (99), on in-memory Postgres |
+| `npm run check:postgres` | The numbering guarantees against the real database, in a scratch schema |
 | `npm run check:auth` | Asserts every data route refuses an unknown caller |
 | `npm run check:layout` | Renders a long document and checks the pagination |
 | `npm run export -- --all` | Renders every issued document to `outputs/invoices/` |
 | `npm run verify -- --all` | Checks the exported PDFs are A4 with fonts embedded |
+| `npm run create-admin -- admin '...'` | Creates a user, or resets their password |
+| `npm run migrate` | Applies pending schema migrations (`-- --status` to look) |
+| `npm run migrate:json` | One-off: moves the old JSON records into the database |
 | `npm run hash-password -- '...'` | Turns a password into what `ADMIN_PASSWORD_HASH` wants |
 | `npm run build` | Frontend bundle into `frontend/dist` |
 | `npm run sync:ds` | Re-copies the design system from source |
@@ -57,8 +66,8 @@ read and modify, so nothing it does is trusted: it holds no credentials, and eve
 it calls is checked again on the server.
 
 `shared/` is the reason the two agree. Money, numbering, dates and the document record are
-pure functions with no filesystem and no DOM, imported by both halves as `@jura/shared`.
-The totals in the live preview and the totals written to disk are the same code.
+pure functions with no I/O and no DOM, imported by both halves as `@jura/shared`.
+The totals in the live preview and the totals stored in the database are the same code.
 
 Locally, the Vite dev server proxies `/__api` to the backend so the browser sees one
 origin. Hosted, they are two different sites and requests go cross-site with credentials —
@@ -84,24 +93,26 @@ Credit note   JURA-CN-YYYY-MM-NNN    JURA-CN-2026-10-001
 runs to four digits past 999.
 
 - **Drafts have no number.** A draft you delete leaves no gap, because it never took one.
-- **Assignment is atomic.** `counters.json` is written to a temp file, flushed, and
-  renamed, all inside a lock directory. Two issues in the same second get different
-  numbers.
-- **A broken counter refuses to issue.** A corrupt, missing or non-integer counter stops
-  the issue and says so. It never restarts the sequence — a duplicate invoice number is
-  worse than a refused click. Fix the file by hand and try again.
+- **Assignment is atomic.** The next number is one upsert on the `counters` row, in the
+  same transaction as the document write. Two issues at once queue on the row lock and get
+  different numbers; an issue that fails part way rolls the counter back with it, so there
+  is no gap either. Proven against Supabase by `npm run check:postgres`.
+- **A duplicate cannot be written at all.** `documents.number` is unique in the database.
+  A counter set back by hand makes the next issue refuse and say so — it never hands out a
+  number already in use.
 - **Numbers are never reused.** A document issued by mistake is *voided*, not deleted.
   The number stays in the sequence, marked void, which is exactly what an auditor wants
   to see.
 
-The rules live in `shared/src/numbering.js`; the atomic write and the lock live in
-`backend/src/atomic.mjs`; the assignment lives in `backend/src/store.mjs`.
+The rules live in `shared/src/numbering.js`; the assignment lives in
+`backend/src/store.mjs`; the constraints live in `backend/migrations/0001_initial.up.sql`.
 
 ### 2. An issued document is frozen
 
 Its content is the record of what the client received, so it cannot be edited. The store
 refuses the write and names the fields it refused — the UI going read-only is a
-convenience, not the guard.
+convenience, not the guard. A trigger on the `documents` table refuses the same edit, and
+any delete of an issued document, even from the Supabase SQL editor.
 
 What can still change is what happened to it *afterwards*: status, payments recorded
 against it, and the links to a receipt or credit note raised from it. That list is
@@ -129,26 +140,26 @@ thousandths so the line amount is an integer multiplication rather than a float 
 
 ## Authentication
 
-One user, a password, and a signed token in an HttpOnly cookie. No session store — the
-token carries the username and an expiry, and an HMAC proves the server issued it.
+Users live in the `users` table, each with a scrypt hash of their password. Signing in
+gives a signed token in an HttpOnly cookie. No session store — the token carries the
+username and an expiry, and an HMAC proves the server issued it.
 
-**The default is `admin` / `P@ssw0rd`, and it is published in this repo.** Treat it as
-public, because it is. It exists so the app works the moment you clone it.
-
-That is fine on a laptop and unsafe on the internet, so the server **refuses to start when
-`NODE_ENV=production` unless `ADMIN_PASSWORD_HASH` is set to something else**. There is no
-way to deploy the default by forgetting to change it. The app also shows a banner while it
-is running on the default, so it cannot be quietly forgotten.
-
-To set a real one:
+Create a user, or reset a password:
 
 ```bash
-npm run hash-password -- 'a long passphrase you have not used elsewhere'
+npm run create-admin -- admin 'a long passphrase you have not used elsewhere'
+# against Supabase from your machine:
+node --env-file=.env backend/scripts/create-admin.mjs admin '...'
 ```
 
-It prints an `ADMIN_PASSWORD_HASH` and a `SESSION_SECRET`. Put both in the Railway
-environment. The password itself never goes into the repo, an env var, or a log — only its
-scrypt hash does.
+Only the hash is stored. Alternatively set `ADMIN_PASSWORD_HASH` (from
+`npm run hash-password`) in Railway, and the first boot on an empty users table creates the
+admin from it.
+
+**With no users, local development accepts `admin` / `P@ssw0rd`, and that is published in
+this repo.** It exists so the app works the moment you clone it, and it stops working the
+moment a real user exists. It is never accepted in production, and the server **refuses
+to start in production with no users** — there is no way to deploy the default.
 
 `npm run check:auth` asserts the parts that matter, which are the refusals: every data
 route without a session, a wrong password, a tampered signature, an expired token, an
@@ -161,17 +172,19 @@ unsigned token, and that the cookie is HttpOnly.
 ### Backend, on Railway
 
 Point a service at this repo. `railway.json` sets the build and start commands and a
-health check on `/__api/health`. Set in the service environment:
+health check on `/__api/health`. Pending migrations run on boot. Set in the service
+environment:
 
 | Variable | |
 | --- | --- |
-| `ADMIN_PASSWORD_HASH` | from `npm run hash-password` — **required** |
+| `DATABASE_URL` | the Supabase **session pooler** string — **required** |
 | `SESSION_SECRET` | 32+ random bytes — **required** |
-| `ALLOWED_ORIGIN` | the exact frontend origin, e.g. `https://invoices.jurasolutions.sg` |
+| `ALLOWED_ORIGIN` | the exact frontend origin, e.g. `https://invoice-system.jurasolutions.com` |
 | `NODE_ENV` | `production` |
+| `ADMIN_PASSWORD_HASH` | optional — creates the admin on first boot if there are no users |
 
 A wildcard origin is not allowed alongside credentials, so `ALLOWED_ORIGIN` has to be
-spelled out. Railway sets `PORT` itself.
+spelled out. Railway sets `PORT` itself. No volume: nothing is kept on Railway's disk.
 
 ### Frontend, on Cloudflare Pages
 
@@ -190,12 +203,11 @@ Full step-by-step, including the domains and the two things that will bite you:
 
 ### The two that will bite you
 
-**Railway's disk is wiped on every deploy.** The records are JSON files, so without a
-mounted volume every issued invoice disappears on the next push. Attach one and point
-`JURA_DATA_PATH` inside it. Moving the store to Postgres is
-`prd/pending/prd-jura-invoicing-hosted-2026-09-06.md`.
+**Use Supabase's session pooler, not the direct host.** `db.<ref>.supabase.co` has only an
+IPv6 address, which Railway cannot reach. The pooler
+(`aws-0-ap-southeast-1.pooler.supabase.com:5432`, user `postgres.<ref>`) is IPv4.
 
-**The API needs a subdomain of the same domain as the app** — `api.jurasolutions.com`, not
+**The API needs a subdomain of the same domain as the app** — `api.invoice.jurasolutions.com`, not
 the `*.up.railway.app` address. The session is a cookie; across different sites it is a
 third-party cookie, which Safari blocks outright. Sign-in would work in Chrome on your
 laptop and fail on your phone.
@@ -204,36 +216,40 @@ laptop and fail on your phone.
 
 ## Where the data lives
 
-Nothing is committed to this repo. Client names, addresses and amounts live outside it:
+Nothing is committed to this repo. The records are in Postgres, in a schema called `jura`:
 
 ```
-jurasolutions/
-├── data/invoices/
-│   ├── config.json         company, bank, PayNow, terms, panel wording, GST flag
-│   ├── counters.json       the running numbers
-│   ├── clients.json        billing entities
-│   ├── templates/*.json    reusable section and item sets
-│   └── documents/*.json    one file per document, named by its internal id
-└── outputs/invoices/       rendered PDFs, named by document number
+settings     one row: company, bank, PayNow, terms, panel wording, GST flag
+counters     the running numbers, one row per type and month
+clients      billing entities
+templates    reusable section and item sets
+documents    one row per document; the whole record in `data`, with number,
+             type and status alongside so the database can hold the rules
+users        who can sign in, with scrypt hashes
 ```
 
-Those paths are resolved by `backend/src/paths.mjs` and printed when the dev server starts. If
-the repo is checked out somewhere other than `jurasolutions/repos/`, both fall back to
-folders inside the repo, which `.gitignore` excludes. `JURA_DATA_PATH` and
-`JURA_OUTPUT_PATH` override.
+Not `public`: Supabase publishes `public` through its REST API to anyone holding the
+publishable key. The `jura` schema is not exposed, the API roles have no grants on it, and
+row level security is on with no policies. The only way in is the Railway API.
 
-Records supporting the accounts have to be retainable for at least five years, so both
-the JSON record and the rendered PDF are kept and never overwritten.
+Schema changes are numbered SQL files in `backend/migrations/` (`NNNN_name.up.sql` and a
+matching `.down.sql`), applied in order, each in one transaction. The API applies pending
+ones on boot; `npm run migrate -- --status` shows where a database is.
+
+Rendered PDFs still go to `jurasolutions/outputs/invoices/` (or `JURA_OUTPUT_PATH`).
+
+Records supporting the accounts have to be retainable for at least five years. Supabase's
+own backups depend on the plan — check its retention, and keep a periodic export as well.
 
 ---
 
 ## Before the first real document
 
-`config.json` ships with placeholders, marked as placeholders rather than left as
+The default settings ship with placeholders, marked as placeholders rather than left as
 plausible-looking invented values. **The app refuses to issue a document while one is
 showing**, and prints them in grey in the meantime.
 
-Open Settings in the app, or edit `config.json`, and set:
+Open Settings in the app and set:
 
 - `company.uen` and `company.address_lines`, then `uen_confirmed` / `address_confirmed`
 - `payment.*` — bank, account name and number, SWIFT, PayNow UEN — then `payment.confirmed`
@@ -279,7 +295,7 @@ application — no work begun, no contract signed, no payment made. By invoice s
 project has commenced, so a note there is too late to be any use and risks implying the
 invoiced project qualifies.
 
-The wording lives in `config.json` under `panels.grant_note`, not in code, and carries a
+The wording lives in the settings under `panels.grant_note`, not in code, and carries a
 `checked_on` date. EDG, PSG and MRA are being consolidated into a single **EDGE** scheme
 through the second half of 2026, so the wording will go stale. The app warns once
 `checked_on` is more than `stale_after_days` (180) old.
@@ -361,12 +377,9 @@ whole document.
 
 ## The local API
 
-The app reads and writes real JSON files, which a browser cannot do. `backend/src/api.mjs`
-runs as Vite dev-server middleware on localhost and does the filesystem work.
-
-This is not a backend in the usual sense — no auth, no hosting, no network exposure, and
-it only exists while `npm run dev` is running. `npm run build` produces a bundle, but the
-bundle has no data API behind it; this is a local tool by design.
+`npm run dev` runs the same API that Railway runs, on :5175, with the Vite dev server
+proxying `/__api` to it. The export and layout tools mount it inside their own process
+instead. One set of routes everywhere.
 
 ---
 
@@ -386,10 +399,11 @@ backend/               the API and the records -> Railway
   src/api.mjs            routes, auth gate, CORS
   src/auth.mjs           passwords, sessions, the production guard
   src/store.mjs          the store - enforces numbering and immutability
-  src/atomic.mjs         atomic writes and the counter lock
-  src/paths.mjs          where the data and the PDFs live
-  scripts/               seed, hash-password
-  tests/                 store and lifecycle tests, against a real data tree
+  src/db.mjs             Postgres or PGlite, transactions, the migration runner
+  src/paths.mjs          where the PDFs and the local database live
+  migrations/            numbered SQL: tables, constraints, the freeze trigger
+  scripts/               migrate, migrate-json, seed, create-admin, hash-password
+  tests/                 store, lifecycle and auth tests, on in-memory Postgres
 
 frontend/              the app -> Cloudflare Pages
   src/app/               the builder UI, the login, the API client
@@ -403,6 +417,7 @@ tools/                 dev tooling, deployed nowhere
   verify-pdf.mjs         checks an exported PDF is A4 with fonts embedded
   check-layout.mjs       renders a long document, checks the pagination
   check-auth.mjs         checks what the login refuses
+  check-postgres.mjs     concurrency and immutability against the real database
 ```
 
 ---
@@ -412,6 +427,6 @@ tools/                 dev tooling, deployed nowhere
 No sending — no email, no connectors. Export a PDF and send it yourself. No payment
 collection or links, no bank reconciliation, no accounting integration, no recurring
 invoicing, no dunning or statements, no GST filing or InvoiceNow submission, no
-multi-user access, no hosting. SGD only, with the currency field present in the schema.
+roles or permissions between users. SGD only, with the currency field present in the schema.
 
 All of that is out of scope in the PRD, deliberately.

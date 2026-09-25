@@ -8,10 +8,14 @@
   "scripts": {
     "dev": "node --watch src/server.mjs",
     "start": "node src/server.mjs",
-    "seed": "node scripts/seed.mjs"
+    "seed": "node scripts/seed.mjs",
+    "migrate": "node scripts/migrate.mjs",
+    "migrate:json": "node scripts/migrate-json.mjs",
+    "create-admin": "node scripts/create-admin.mjs"
   },
   "dependencies": {
-    "@jura/shared": "*"
+    "@jura/shared": "*",
+    "pg": "^8.23.0"
   },
   "engines": {
     "node": ">=20"

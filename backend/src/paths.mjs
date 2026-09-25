@@ -1,18 +1,18 @@
 /**
- * Where the data and the rendered PDFs live.
+ * Where things live on disk.
  *
- * State is deliberately kept outside this repo. Client names, addresses and
- * amounts are not things to push to GitHub, and the AI OS already has a home
- * for them at `jurasolutions/data/`. When this repo sits in its usual place
- * (`jurasolutions/repos/invoice-system`), the data root resolves to
- * `jurasolutions/data/invoices/` and rendered PDFs to
- * `jurasolutions/outputs/invoices/`.
+ * The records are in Postgres now (see db.mjs). What is left on disk is:
  *
- * Checked out somewhere else, both fall back to folders inside the repo, which
- * `.gitignore` already excludes. Either way the resolved paths are printed when
- * the dev server starts, so there is never a question of where a document went.
+ *   - rendered PDFs, from `npm run export`
+ *   - the local development database, when DATABASE_URL is not set
+ *   - the old JSON data tree, read once by `npm run migrate:json`
  *
- * Override with JURA_DATA_PATH and JURA_OUTPUT_PATH.
+ * When this repo sits in its usual place (`jurasolutions/repos/invoice-system`)
+ * those resolve under `jurasolutions/data/` and `jurasolutions/outputs/`, which
+ * the AI OS already treats as machine-writable. Checked out anywhere else they
+ * fall back to folders inside the repo, which `.gitignore` excludes.
+ *
+ * Override with JURA_OUTPUT_PATH, JURA_PGLITE_PATH and JURA_DATA_PATH.
  */
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -27,30 +27,24 @@ export const repoRoot = resolve(here, "../..");
 const domainRoot = resolve(repoRoot, "../..");
 const insideDomain = existsSync(resolve(domainRoot, "CLAUDE.md")) && existsSync(resolve(domainRoot, "design-system"));
 
-export const dataRoot = process.env.JURA_DATA_PATH
-  ? resolve(process.env.JURA_DATA_PATH)
-  : insideDomain
-    ? resolve(domainRoot, "data/invoices")
-    : resolve(repoRoot, "data/invoices");
+const underDomain = (domainPath, repoPath) => (insideDomain ? resolve(domainRoot, domainPath) : resolve(repoRoot, repoPath));
 
 export const outputRoot = process.env.JURA_OUTPUT_PATH
   ? resolve(process.env.JURA_OUTPUT_PATH)
-  : insideDomain
-    ? resolve(domainRoot, "outputs/invoices")
-    : resolve(repoRoot, "outputs/invoices");
+  : underDomain("outputs/invoices", "outputs/invoices");
+
+/** The PGlite directory for local development. `memory://` keeps it off disk. */
+export const localDatabasePath = process.env.JURA_PGLITE_PATH?.startsWith("memory://")
+  ? process.env.JURA_PGLITE_PATH
+  : process.env.JURA_PGLITE_PATH
+    ? resolve(process.env.JURA_PGLITE_PATH)
+    : underDomain("data/invoices-db", "data/invoices-db");
+
+/** The pre-Postgres JSON tree. Only the one-off migration reads it. */
+export const legacyDataRoot = process.env.JURA_DATA_PATH
+  ? resolve(process.env.JURA_DATA_PATH)
+  : underDomain("data/invoices", "data/invoices");
 
 export const paths = {
-  root: dataRoot,
-  config: resolve(dataRoot, "config.json"),
-  counters: resolve(dataRoot, "counters.json"),
-  countersLock: resolve(dataRoot, "counters.lock"),
-  clients: resolve(dataRoot, "clients.json"),
-  templates: resolve(dataRoot, "templates"),
-  documents: resolve(dataRoot, "documents"),
   outputs: outputRoot,
 };
-
-/** True when the data tree has been seeded. */
-export function isSeeded() {
-  return existsSync(paths.config) && existsSync(paths.counters) && existsSync(paths.documents);
-}

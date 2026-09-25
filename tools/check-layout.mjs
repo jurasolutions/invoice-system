@@ -18,37 +18,33 @@
  *   a section that spans a page boundary repeats its header, and every item
  *   that went in came out somewhere
  *
- * It runs against a temporary data tree, so it never touches real records.
+ * It runs against an in-memory database, so it never touches real records.
  */
-import { mkdtemp, rm, mkdir } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const root = await mkdtemp(join(tmpdir(), "jura-layout-"));
-process.env.JURA_DATA_PATH = join(root, "data/invoices");
+delete process.env.DATABASE_URL;
+process.env.JURA_PGLITE_PATH = "memory://";
 process.env.JURA_OUTPUT_PATH = join(root, "outputs");
 
 const puppeteer = (await import("puppeteer-core")).default;
 const { findChrome } = await import("./find-chrome.mjs");
 const { startPreview } = await import("./preview-server.mjs");
-const { paths } = await import("../backend/src/paths.mjs");
-const { writeJsonAtomic } = await import("../backend/src/atomic.mjs");
-const { emptyCounters } = await import("@jura/shared/numbering.js");
+const store = await import("../backend/src/store.mjs");
 const { defaultConfig } = await import("@jura/shared/defaults/config.js");
 
 const ITEMS_PER_SECTION = 9;
 const SECTIONS = 5;
 
-await mkdir(paths.documents, { recursive: true });
-await mkdir(paths.templates, { recursive: true });
+await store.ensureDatabase({ log: null });
 
 const config = defaultConfig();
 config.company.uen = "202612345K";
 config.company.uen_confirmed = true;
 config.company.address_confirmed = true;
-await writeJsonAtomic(paths.config, config);
-await writeJsonAtomic(paths.counters, emptyCounters());
-await writeJsonAtomic(paths.clients, []);
+await store.writeConfig(config);
 
 const sections = Array.from({ length: SECTIONS }, (_, s) => ({
   id: `sec_${s}`,
@@ -66,7 +62,7 @@ const sections = Array.from({ length: SECTIONS }, (_, s) => ({
 
 const totalItems = SECTIONS * ITEMS_PER_SECTION;
 
-await writeJsonAtomic(join(paths.documents, "doc_layout_check.json"), {
+await store.writeDocument({
   id: "doc_layout_check",
   type: "invoice",
   number: "JURA-2026-09-001",
