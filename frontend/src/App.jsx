@@ -41,7 +41,9 @@ function Shell() {
           {error?.message}
           <br />
           <br />
-          If this is a fresh checkout, run <code>npm run seed</code> once to create the data tree, then reload.
+          Hosted: check the API&rsquo;s <code>/__api/health</code> answers, and that <code>VITE_API_URL</code> in
+          Cloudflare Pages is right &mdash; it is fixed when the site is built, so changing it needs a redeploy.
+          Locally: start both halves with <code>npm run dev</code>.
         </Alert>
       </Splash>
     );
