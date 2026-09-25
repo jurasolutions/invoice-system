@@ -85,10 +85,19 @@ Run it again with a new password to reset one. Only the scrypt hash is stored.
 
 New Project → **Deploy from GitHub repo** → `jurasolutions/invoice-system`.
 
-`railway.json` sets the build command, the start command and a health check on
-`/__api/health`. Leave the root directory as the repo root — the workspace install needs
-it. Replicas can stay at 1; the database, not the instance, serialises the numbering, so
-more than one is safe too.
+The `Dockerfile` at the repo root defines the image, and Railway uses it automatically —
+the Builder should read **Dockerfile**. Leave these empty: Root Directory (the image needs
+`shared/` as well as `backend/`), Custom Build Command, Custom Start Command.
+
+Without the Dockerfile, Railway's default builder sees the Vite app in the repo and serves
+the frontend as a static site — every URL, `/__api/health` included, answers with the app's
+HTML and the API never starts. If you ever see HTML from the API domain, that is why.
+
+Optional but worth it: Settings → Deploy → **Healthcheck Path** `/__api/health`, so a
+deploy that cannot reach the database is never switched in.
+
+Replicas can stay at 1; the database, not the instance, serialises the numbering, so more
+than one is safe too.
 
 **No volume.** Nothing is kept on Railway's disk.
 
@@ -204,6 +213,10 @@ That is the direct, IPv6-only host. Use the session pooler string.
 **The service will not start: `tenant/user ... not found`.**
 The pooler needs the username `postgres.<ref>`, and the pooler host for the project's
 region (`aws-0-ap-southeast-1` for Singapore).
+
+**The API domain answers with the app's HTML page.**
+Railway built the repo with its default builder instead of the `Dockerfile`. Check
+Settings → Build → Builder says Dockerfile, and that Root Directory is empty.
 
 **The service will not start: "Refusing to start".**
 The log names what is missing: `DATABASE_URL`, `SESSION_SECRET`, or any user to sign in

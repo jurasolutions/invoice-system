@@ -171,9 +171,9 @@ unsigned token, and that the cookie is HttpOnly.
 
 ### Backend, on Railway
 
-Point a service at this repo. `railway.json` sets the build and start commands and a
-health check on `/__api/health`. Pending migrations run on boot. Set in the service
-environment:
+Point a service at this repo, root directory empty. The `Dockerfile` builds the API image
+(production dependencies only, no build step); pending migrations run on boot. Set in the
+service environment:
 
 | Variable | |
 | --- | --- |
